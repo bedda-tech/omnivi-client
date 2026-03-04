@@ -13,6 +13,7 @@ const DUST_EMIT_MASS = 2;        // mass of each emitted dust particle
 const INITIAL_DUST_COUNT = 300;  // dust seeded at match start
 const MAX_DUST = 600;
 const ABSORB_RATIO = 1.5;        // player must be this times larger to absorb
+const DUST_RESPAWN_MIN = 150;    // respawn ambient dust when count falls below this
 
 // ─── Gravity (Barnes-Hut) ───────────────────────────────────────────────────
 const GRAVITY_G = 800;           // gravitational constant (tune for feel)
@@ -421,6 +422,9 @@ export class Main extends Phaser.Scene {
       d.update(dt);
     }
 
+    // ── Dust-to-dust merging (spatial grid, O(n)) ──────────────────────
+    this.mergeDust();
+
     // ── Absorption: player absorbs dust particles ───────────────────────
     const pr = this.player.radius;
     const px = this.player.x;
@@ -451,14 +455,15 @@ export class Main extends Phaser.Scene {
 
     // ── HUD ─────────────────────────────────────────────────────────────
     const speed = Math.hypot(this.player.vx, this.player.vy);
+    const asteroidCount = this.dust.filter(d => d.mass >= 20).length;
+    const dustCount = this.dust.length - asteroidCount;
     this.massText.setText(
       [
         `Mass:   ${Math.floor(this.player.mass)}`,
         `Radius: ${this.player.radius.toFixed(1)} px`,
         `Speed:  ${speed.toFixed(0)} px/s`,
-        `Dust:   ${this.dust.length}`,
+        `Dust:   ${dustCount}  Rocks: ${asteroidCount}`,
         `Pos:    (${Math.floor(this.player.x)}, ${Math.floor(this.player.y)})`,
-        `G:      ${GRAVITY_G}`,
       ].join("\n")
     );
 
@@ -466,14 +471,91 @@ export class Main extends Phaser.Scene {
     this.drawScene();
   }
 
+  /**
+   * Spatial-grid O(n) dust-to-dust collision and merging.
+   * Particles that overlap combine via momentum conservation.
+   * Also respawns ambient dust when the world gets sparse.
+   */
+  private mergeDust() {
+    const CELL = 40; // grid cell size — covers max small-dust diameter well
+    const grid = new Map<number, DustParticle[]>();
+    const cellKey = (cx: number, cy: number) => cx * 10000 + cy;
+    const cellOf = (v: number) => Math.floor(v / CELL);
+
+    for (const d of this.dust) {
+      const key = cellKey(cellOf(d.x), cellOf(d.y));
+      if (!grid.has(key)) grid.set(key, []);
+      grid.get(key)!.push(d);
+    }
+
+    let anyMerged = false;
+    for (const d of this.dust) {
+      if (!d.active) continue;
+      const cx = cellOf(d.x);
+      const cy = cellOf(d.y);
+      for (let nx = cx - 1; nx <= cx + 1; nx++) {
+        for (let ny = cy - 1; ny <= cy + 1; ny++) {
+          const bucket = grid.get(cellKey(nx, ny));
+          if (!bucket) continue;
+          for (const other of bucket) {
+            if (other === d || !other.active) continue;
+            const dx = other.x - d.x;
+            const dy = other.y - d.y;
+            const minDist = d.radius + other.radius;
+            if (dx * dx + dy * dy < minDist * minDist) {
+              // Larger absorbs smaller; ties go to d
+              const bigger = d.mass >= other.mass ? d : other;
+              const smaller = bigger === d ? other : d;
+              const totalMass = bigger.mass + smaller.mass;
+              // Conservation of momentum
+              bigger.vx = (bigger.vx * bigger.mass + smaller.vx * smaller.mass) / totalMass;
+              bigger.vy = (bigger.vy * bigger.mass + smaller.vy * smaller.mass) / totalMass;
+              // Center of mass position
+              bigger.x = (bigger.x * bigger.mass + smaller.x * smaller.mass) / totalMass;
+              bigger.y = (bigger.y * bigger.mass + smaller.y * smaller.mass) / totalMass;
+              bigger.mass = totalMass;
+              smaller.active = false;
+              anyMerged = true;
+            }
+          }
+        }
+      }
+    }
+
+    if (anyMerged) {
+      this.dust = this.dust.filter(d => d.active);
+    }
+
+    // Respawn sparse ambient dust so the world stays populated
+    while (this.dust.length < DUST_RESPAWN_MIN) {
+      const x = Math.random() * WORLD_SIZE;
+      const y = Math.random() * WORLD_SIZE;
+      const mass = DUST_EMIT_MASS + Math.random() * 6;
+      const speed = Math.random() * 20;
+      const angle = Math.random() * Math.PI * 2;
+      this.dust.push(new DustParticle(x, y, Math.cos(angle) * speed, Math.sin(angle) * speed, mass));
+    }
+  }
+
   private drawScene() {
     this.gfx.clear();
 
-    // ── Draw dust ────────────────────────────────────────────────────────
+    // ── Draw dust — color shifts from blue (tiny) to orange-red (asteroid) ──
     for (const d of this.dust) {
       const r = Math.max(1.5, d.radius);
-      this.gfx.fillStyle(0x88aaff, 0.55);
+      // t: 0 at mass=2 (dust), 1 at mass=100 (small asteroid)
+      const t = Math.min(1, Math.log(Math.max(1, d.mass / 2)) / Math.log(50));
+      const ri = Math.round(0x88 + t * (0xff - 0x88));
+      const gi = Math.round(0xaa + t * (0x55 - 0xaa));
+      const bi = Math.round(0xff + t * (0x11 - 0xff));
+      const color = (ri << 16) | (gi << 8) | bi;
+      const alpha = 0.55 + t * 0.35;
+      this.gfx.fillStyle(color, alpha);
       this.gfx.fillCircle(d.x, d.y, r);
+      if (d.mass > 20) {
+        this.gfx.lineStyle(Math.max(1, r * 0.08), 0xffffff, 0.3);
+        this.gfx.strokeCircle(d.x, d.y, r);
+      }
     }
 
     const { x, y, radius, rotation, mass, thrustingThisFrame } = this.player;
