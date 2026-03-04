@@ -14,6 +14,12 @@ const INITIAL_DUST_COUNT = 300;  // dust seeded at match start
 const MAX_DUST = 600;
 const ABSORB_RATIO = 1.5;        // player must be this times larger to absorb
 
+// ─── Gravity (Barnes-Hut) ───────────────────────────────────────────────────
+const GRAVITY_G = 800;           // gravitational constant (tune for feel)
+const GRAVITY_THETA = 0.5;       // Barnes-Hut approximation threshold
+const GRAVITY_MIN_DIST_SQ = 900; // 30px — avoid singularity
+const MAX_G_ACCEL = 500;         // px/s² cap (prevents lag-spike explosions)
+
 function massToRadius(mass: number): number {
   return Math.sqrt(mass) * RADIUS_SCALE;
 }
@@ -49,6 +55,77 @@ class DustParticle {
     if (this.x > WORLD_SIZE) { this.x = WORLD_SIZE; this.vx = -Math.abs(this.vx); }
     if (this.y < 0) { this.y = 0; this.vy = Math.abs(this.vy); }
     if (this.y > WORLD_SIZE) { this.y = WORLD_SIZE; this.vy = -Math.abs(this.vy); }
+  }
+}
+
+// ─── Barnes-Hut QuadTree ────────────────────────────────────────────────────
+class QuadNode {
+  cx = 0; cy = 0; totalMass = 0;
+  body: DustParticle | null = null;
+  nw: QuadNode | null = null;
+  ne: QuadNode | null = null;
+  sw: QuadNode | null = null;
+  se: QuadNode | null = null;
+
+  constructor(
+    readonly minX: number,
+    readonly minY: number,
+    readonly maxX: number,
+    readonly maxY: number,
+  ) {}
+
+  get size() { return this.maxX - this.minX; }
+
+  insert(b: DustParticle): void {
+    if (this.totalMass === 0) {
+      this.body = b;
+      this.cx = b.x; this.cy = b.y; this.totalMass = b.mass;
+      return;
+    }
+    if (this.body !== null) {
+      this._sub(this.body);
+      this.body = null;
+    }
+    const t = this.totalMass + b.mass;
+    this.cx = (this.cx * this.totalMass + b.x * b.mass) / t;
+    this.cy = (this.cy * this.totalMass + b.y * b.mass) / t;
+    this.totalMass = t;
+    this._sub(b);
+  }
+
+  private _sub(b: DustParticle): void {
+    const mx = (this.minX + this.maxX) * 0.5;
+    const my = (this.minY + this.maxY) * 0.5;
+    if (b.x < mx) {
+      if (b.y < my) { if (!this.nw) this.nw = new QuadNode(this.minX, this.minY, mx, my); this.nw.insert(b); }
+      else           { if (!this.sw) this.sw = new QuadNode(this.minX, my, mx, this.maxY); this.sw.insert(b); }
+    } else {
+      if (b.y < my) { if (!this.ne) this.ne = new QuadNode(mx, this.minY, this.maxX, my); this.ne.insert(b); }
+      else           { if (!this.se) this.se = new QuadNode(mx, my, this.maxX, this.maxY); this.se.insert(b); }
+    }
+  }
+
+  /** Gravitational acceleration at (bx, by) from all bodies in this node, skipping `skip`. */
+  accelAt(bx: number, by: number, skip: DustParticle, theta: number): [number, number] {
+    if (this.totalMass === 0) return [0, 0];
+    if (this.body === skip)   return [0, 0];
+
+    const dx = this.cx - bx;
+    const dy = this.cy - by;
+    const distSq = dx * dx + dy * dy;
+    if (distSq < GRAVITY_MIN_DIST_SQ) return [0, 0];
+
+    if (this.body !== null || this.size / Math.sqrt(distSq) < theta) {
+      const dist = Math.sqrt(distSq);
+      const a = GRAVITY_G * this.totalMass / distSq;
+      return [a * dx / dist, a * dy / dist];
+    }
+
+    let ax = 0, ay = 0;
+    for (const c of [this.nw, this.ne, this.sw, this.se]) {
+      if (c) { const [cx, cy] = c.accelAt(bx, by, skip, theta); ax += cx; ay += cy; }
+    }
+    return [ax, ay];
   }
 }
 
@@ -244,7 +321,7 @@ export class Main extends Phaser.Scene {
   }
 
   update(_time: number, delta: number) {
-    const dt = delta / 1000;
+    const dt = Math.min(delta / 1000, 0.05); // cap at 50 ms to prevent lag-spike explosions
 
     // ── Determine input mode ────────────────────────────────────────────
     const keyLeft = this.cursors.left?.isDown || this.keyA.isDown;
@@ -309,6 +386,36 @@ export class Main extends Phaser.Scene {
     // ── Update player ──────────────────────────────────────────────────
     this.player.update(dt);
 
+    // ── Gravity simulation (Barnes-Hut) ───────────────────────────────────────
+    if (this.dust.length > 0) {
+      const tree = new QuadNode(0, 0, WORLD_SIZE, WORLD_SIZE);
+      for (const d of this.dust) tree.insert(d);
+
+      const px = this.player.x;
+      const py = this.player.y;
+      const pm = this.player.mass;
+
+      for (const d of this.dust) {
+        // Gravity from other dust (Barnes-Hut O(n log n))
+        let [ax, ay] = tree.accelAt(d.x, d.y, d, GRAVITY_THETA);
+
+        // Gravity from player (the dominant gravity well)
+        const dx = px - d.x;
+        const dy = py - d.y;
+        const dSq = Math.max(dx * dx + dy * dy, GRAVITY_MIN_DIST_SQ);
+        const dist = Math.sqrt(dSq);
+        const pa = GRAVITY_G * pm / dSq;
+        ax += pa * dx / dist;
+        ay += pa * dy / dist;
+
+        // Cap magnitude to guard against lag spikes
+        const mag = Math.hypot(ax, ay);
+        if (mag > MAX_G_ACCEL) { ax = ax / mag * MAX_G_ACCEL; ay = ay / mag * MAX_G_ACCEL; }
+        d.vx += ax * dt;
+        d.vy += ay * dt;
+      }
+    }
+
     // ── Update dust ────────────────────────────────────────────────────
     for (const d of this.dust) {
       d.update(dt);
@@ -351,6 +458,7 @@ export class Main extends Phaser.Scene {
         `Speed:  ${speed.toFixed(0)} px/s`,
         `Dust:   ${this.dust.length}`,
         `Pos:    (${Math.floor(this.player.x)}, ${Math.floor(this.player.y)})`,
+        `G:      ${GRAVITY_G}`,
       ].join("\n")
     );
 
