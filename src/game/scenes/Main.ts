@@ -12,8 +12,15 @@ const MAX_SPEED = 500;
 const DUST_EMIT_MASS = 2;        // mass of each emitted dust particle
 const INITIAL_DUST_COUNT = 300;  // dust seeded at match start
 const MAX_DUST = 600;
-const ABSORB_RATIO = 1.5;        // player must be this times larger to absorb
+const ABSORB_RATIO = 1.5;        // must be this times larger to absorb
 const DUST_RESPAWN_MIN = 150;    // respawn ambient dust when count falls below this
+
+// ─── Asteroid ───────────────────────────────────────────────────────────────
+const ASTEROID_THRESHOLD = 50;  // dust mass at which it graduates to Asteroid
+const PLANET_THRESHOLD = 1000;  // asteroid mass at which it's labeled a Planet
+const INITIAL_ASTEROIDS = 6;    // asteroid bodies seeded at match start
+const ASTEROID_DRAG = 0.9995;   // asteroids resist drag (momentum conservation)
+const ASTEROID_VERTICES = 10;   // polygon vertex count for craggy look
 
 // ─── Gravity (Barnes-Hut) ───────────────────────────────────────────────────
 const GRAVITY_G = 800;           // gravitational constant (tune for feel)
@@ -56,6 +63,52 @@ class DustParticle {
     if (this.x > WORLD_SIZE) { this.x = WORLD_SIZE; this.vx = -Math.abs(this.vx); }
     if (this.y < 0) { this.y = 0; this.vy = Math.abs(this.vy); }
     if (this.y > WORLD_SIZE) { this.y = WORLD_SIZE; this.vy = -Math.abs(this.vy); }
+  }
+}
+
+// ─── Asteroid ──────────────────────────────────────────────────────────────
+class Asteroid {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  mass: number;
+  rotation: number;
+  rotationSpeed: number;  // rad/s
+  active: boolean = true;
+  // Pre-computed per-vertex radius multipliers for craggy polygon shape [0.65..1.35]
+  shapeOffsets: number[];
+
+  constructor(x: number, y: number, vx: number, vy: number, mass: number) {
+    this.x = x;
+    this.y = y;
+    this.vx = vx;
+    this.vy = vy;
+    this.mass = mass;
+    this.rotation = Math.random() * Math.PI * 2;
+    this.rotationSpeed = (Math.random() - 0.5) * 0.6; // rad/s
+    this.shapeOffsets = Array.from({ length: ASTEROID_VERTICES }, () =>
+      0.65 + Math.random() * 0.7
+    );
+  }
+
+  get radius(): number {
+    return massToRadius(this.mass);
+  }
+
+  update(dt: number) {
+    this.rotation += this.rotationSpeed * dt;
+    this.x += this.vx * dt;
+    this.y += this.vy * dt;
+    const dragFactor = Math.pow(ASTEROID_DRAG, dt * 60);
+    this.vx *= dragFactor;
+    this.vy *= dragFactor;
+    // Bounce at world edges (less energy loss than player, asteroids are denser)
+    const r = this.radius;
+    if (this.x < r) { this.x = r; this.vx = Math.abs(this.vx) * 0.85; }
+    if (this.x > WORLD_SIZE - r) { this.x = WORLD_SIZE - r; this.vx = -Math.abs(this.vx) * 0.85; }
+    if (this.y < r) { this.y = r; this.vy = Math.abs(this.vy) * 0.85; }
+    if (this.y > WORLD_SIZE - r) { this.y = WORLD_SIZE - r; this.vy = -Math.abs(this.vy) * 0.85; }
   }
 }
 
@@ -207,6 +260,7 @@ class Player {
 export class Main extends Phaser.Scene {
   private player!: Player;
   private dust: DustParticle[] = [];
+  private asteroids: Asteroid[] = [];
 
   // Rendering
   private gfx!: Phaser.GameObjects.Graphics;
@@ -259,6 +313,21 @@ export class Main extends Phaser.Scene {
       this.dust.push(new DustParticle(x, y, Math.cos(angle) * speed, Math.sin(angle) * speed, mass));
     }
 
+    // Seed initial asteroids (spread away from center to avoid instant player collision)
+    for (let i = 0; i < INITIAL_ASTEROIDS; i++) {
+      // Place in a ring between 800–2000px from center
+      const angle = (i / INITIAL_ASTEROIDS) * Math.PI * 2 + Math.random() * 0.5;
+      const dist = 800 + Math.random() * 1200;
+      const x = WORLD_SIZE / 2 + Math.cos(angle) * dist;
+      const y = WORLD_SIZE / 2 + Math.sin(angle) * dist;
+      const mass = ASTEROID_THRESHOLD + Math.random() * 300; // 50–350 mass
+      const speed = Math.random() * 25;
+      const avel = Math.random() * Math.PI * 2;
+      this.asteroids.push(
+        new Asteroid(x, y, Math.cos(avel) * speed, Math.sin(avel) * speed, mass)
+      );
+    }
+
     // HUD elements — setScrollFactor(0) pins them to the screen
     this.massText = this.add
       .text(16, 16, "", {
@@ -272,7 +341,7 @@ export class Main extends Phaser.Scene {
       .setDepth(20);
 
     this.add
-      .text(16, 120, "Mouse: point to aim  |  Click/Hold: thrust\nWASD / Arrow keys: rotate & thrust", {
+      .text(16, 136, "Mouse: point to aim  |  Click/Hold: thrust\nWASD / Arrow keys: rotate & thrust", {
         fontSize: "12px",
         color: "#aaaaaa",
         stroke: "#000000",
@@ -387,8 +456,9 @@ export class Main extends Phaser.Scene {
     // ── Update player ──────────────────────────────────────────────────
     this.player.update(dt);
 
-    // ── Gravity simulation (Barnes-Hut) ───────────────────────────────────────
-    if (this.dust.length > 0) {
+    // ── Gravity simulation ─────────────────────────────────────────────
+    {
+      // Build Barnes-Hut tree for dust-to-dust gravity
       const tree = new QuadNode(0, 0, WORLD_SIZE, WORLD_SIZE);
       for (const d of this.dust) tree.insert(d);
 
@@ -396,57 +466,134 @@ export class Main extends Phaser.Scene {
       const py = this.player.y;
       const pm = this.player.mass;
 
+      // Dust: gravity from other dust (Barnes-Hut) + player gravity + asteroid gravity
       for (const d of this.dust) {
-        // Gravity from other dust (Barnes-Hut O(n log n))
-        let [ax, ay] = tree.accelAt(d.x, d.y, d, GRAVITY_THETA);
+        let [ax, ay] = this.dust.length > 0
+          ? tree.accelAt(d.x, d.y, d, GRAVITY_THETA)
+          : [0, 0];
 
-        // Gravity from player (the dominant gravity well)
-        const dx = px - d.x;
-        const dy = py - d.y;
-        const dSq = Math.max(dx * dx + dy * dy, GRAVITY_MIN_DIST_SQ);
-        const dist = Math.sqrt(dSq);
-        const pa = GRAVITY_G * pm / dSq;
-        ax += pa * dx / dist;
-        ay += pa * dy / dist;
+        // Player as dominant gravity well
+        {
+          const dx = px - d.x;
+          const dy = py - d.y;
+          const dSq = Math.max(dx * dx + dy * dy, GRAVITY_MIN_DIST_SQ);
+          const dist = Math.sqrt(dSq);
+          const pa = GRAVITY_G * pm / dSq;
+          ax += pa * dx / dist;
+          ay += pa * dy / dist;
+        }
 
-        // Cap magnitude to guard against lag spikes
+        // Each asteroid is also a gravity well for dust
+        for (const a of this.asteroids) {
+          const dx = a.x - d.x;
+          const dy = a.y - d.y;
+          const dSq = Math.max(dx * dx + dy * dy, GRAVITY_MIN_DIST_SQ);
+          const dist = Math.sqrt(dSq);
+          const ag = GRAVITY_G * a.mass / dSq;
+          ax += ag * dx / dist;
+          ay += ag * dy / dist;
+        }
+
         const mag = Math.hypot(ax, ay);
         if (mag > MAX_G_ACCEL) { ax = ax / mag * MAX_G_ACCEL; ay = ay / mag * MAX_G_ACCEL; }
         d.vx += ax * dt;
         d.vy += ay * dt;
       }
-    }
 
-    // ── Update dust ────────────────────────────────────────────────────
-    for (const d of this.dust) {
-      d.update(dt);
-    }
+      // Asteroid-to-asteroid gravity (N² but count stays small)
+      for (let i = 0; i < this.asteroids.length; i++) {
+        const a = this.asteroids[i];
+        for (let j = i + 1; j < this.asteroids.length; j++) {
+          const b = this.asteroids[j];
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const dSq = Math.max(dx * dx + dy * dy, GRAVITY_MIN_DIST_SQ);
+          const dist = Math.sqrt(dSq);
+          const f = GRAVITY_G / dSq / dist; // precompute /dist
+          a.vx += b.mass * f * dx * dt;
+          a.vy += b.mass * f * dy * dt;
+          b.vx -= a.mass * f * dx * dt;
+          b.vy -= a.mass * f * dy * dt;
+        }
+      }
 
-    // ── Dust-to-dust merging (spatial grid, O(n)) ──────────────────────
-    this.mergeDust();
-
-    // ── Absorption: player absorbs dust particles ───────────────────────
-    const pr = this.player.radius;
-    const px = this.player.x;
-    const py = this.player.y;
-    let absorbed = false;
-    for (const d of this.dust) {
-      if (!d.active) continue;
-      if (this.player.mass < d.mass * ABSORB_RATIO) continue; // too small to absorb this dust
-      const dx = d.x - px;
-      const dy = d.y - py;
-      if (dx * dx + dy * dy < (pr + d.radius) * (pr + d.radius)) {
-        this.player.mass += d.mass;
-        d.active = false;
-        absorbed = true;
+      // Asteroid gravity on player (large rocks are dangerous!)
+      for (const a of this.asteroids) {
+        const dx = a.x - this.player.x;
+        const dy = a.y - this.player.y;
+        const dSq = Math.max(dx * dx + dy * dy, GRAVITY_MIN_DIST_SQ);
+        const dist = Math.sqrt(dSq);
+        let ag = GRAVITY_G * a.mass / dSq;
+        let agx = ag * dx / dist;
+        let agy = ag * dy / dist;
+        const amag = Math.hypot(agx, agy);
+        if (amag > MAX_G_ACCEL) { agx = agx / amag * MAX_G_ACCEL; agy = agy / amag * MAX_G_ACCEL; }
+        this.player.vx += agx * dt;
+        this.player.vy += agy * dt;
       }
     }
-    if (absorbed) {
-      this.dust = this.dust.filter((d) => d.active);
+
+    // ── Update positions ───────────────────────────────────────────────
+    for (const d of this.dust) d.update(dt);
+    for (const a of this.asteroids) a.update(dt);
+
+    // ── Dust-to-dust merging ────────────────────────────────────────────
+    this.mergeDust();
+
+    // ── Promote large dust → Asteroid ──────────────────────────────────
+    this.promoteDust();
+
+    // ── Asteroid absorbs nearby dust ───────────────────────────────────
+    this.asteroidAbsorbsDust();
+
+    // ── Asteroids merge with each other (planet formation) ─────────────
+    this.mergeAsteroids();
+
+    // ── Player absorbs dust ────────────────────────────────────────────
+    {
+      const pr = this.player.radius;
+      const px = this.player.x;
+      const py = this.player.y;
+      let absorbed = false;
+      for (const d of this.dust) {
+        if (!d.active) continue;
+        if (this.player.mass < d.mass * ABSORB_RATIO) continue;
+        const dx = d.x - px;
+        const dy = d.y - py;
+        if (dx * dx + dy * dy < (pr + d.radius) * (pr + d.radius)) {
+          this.player.mass += d.mass;
+          d.active = false;
+          absorbed = true;
+        }
+      }
+      if (absorbed) this.dust = this.dust.filter(d => d.active);
+    }
+
+    // ── Player absorbs asteroids ────────────────────────────────────────
+    {
+      const pr = this.player.radius;
+      const px = this.player.x;
+      const py = this.player.y;
+      let absorbed = false;
+      for (const a of this.asteroids) {
+        if (!a.active) continue;
+        if (this.player.mass < a.mass * ABSORB_RATIO) continue;
+        const dx = a.x - px;
+        const dy = a.y - py;
+        if (dx * dx + dy * dy < (pr + a.radius) * (pr + a.radius)) {
+          // Momentum conservation: the player is absorbing a moving body
+          const tm = this.player.mass + a.mass;
+          this.player.vx = (this.player.vx * this.player.mass + a.vx * a.mass) / tm;
+          this.player.vy = (this.player.vy * this.player.mass + a.vy * a.mass) / tm;
+          this.player.mass = tm;
+          a.active = false;
+          absorbed = true;
+        }
+      }
+      if (absorbed) this.asteroids = this.asteroids.filter(a => a.active);
     }
 
     // ── Camera: follow player with dynamic zoom ─────────────────────────
-    // Zoom out as player grows: zoom = base / radius
     const targetZoom = Phaser.Math.Clamp(550 / this.player.radius, 0.15, 3);
     const currentZoom = this.cameras.main.zoom;
     const newZoom = Phaser.Math.Linear(currentZoom, targetZoom, 0.04);
@@ -455,15 +602,16 @@ export class Main extends Phaser.Scene {
 
     // ── HUD ─────────────────────────────────────────────────────────────
     const speed = Math.hypot(this.player.vx, this.player.vy);
-    const asteroidCount = this.dust.filter(d => d.mass >= 20).length;
-    const dustCount = this.dust.length - asteroidCount;
+    const planetCount = this.asteroids.filter(a => a.mass >= PLANET_THRESHOLD).length;
+    const asteroidCount = this.asteroids.length - planetCount;
     this.massText.setText(
       [
-        `Mass:   ${Math.floor(this.player.mass)}`,
-        `Radius: ${this.player.radius.toFixed(1)} px`,
-        `Speed:  ${speed.toFixed(0)} px/s`,
-        `Dust:   ${dustCount}  Rocks: ${asteroidCount}`,
-        `Pos:    (${Math.floor(this.player.x)}, ${Math.floor(this.player.y)})`,
+        `Mass:     ${Math.floor(this.player.mass)}`,
+        `Radius:   ${this.player.radius.toFixed(1)} px`,
+        `Speed:    ${speed.toFixed(0)} px/s`,
+        `Dust:     ${this.dust.length}`,
+        `Asteroids:${asteroidCount}  Planets: ${planetCount}`,
+        `Pos:      (${Math.floor(this.player.x)}, ${Math.floor(this.player.y)})`,
       ].join("\n")
     );
 
@@ -507,10 +655,8 @@ export class Main extends Phaser.Scene {
               const bigger = d.mass >= other.mass ? d : other;
               const smaller = bigger === d ? other : d;
               const totalMass = bigger.mass + smaller.mass;
-              // Conservation of momentum
               bigger.vx = (bigger.vx * bigger.mass + smaller.vx * smaller.mass) / totalMass;
               bigger.vy = (bigger.vy * bigger.mass + smaller.vy * smaller.mass) / totalMass;
-              // Center of mass position
               bigger.x = (bigger.x * bigger.mass + smaller.x * smaller.mass) / totalMass;
               bigger.y = (bigger.y * bigger.mass + smaller.y * smaller.mass) / totalMass;
               bigger.mass = totalMass;
@@ -537,14 +683,82 @@ export class Main extends Phaser.Scene {
     }
   }
 
+  /** Graduate dust particles that have grown past the asteroid threshold. */
+  private promoteDust() {
+    const toPromote: DustParticle[] = [];
+    this.dust = this.dust.filter(d => {
+      if (d.mass >= ASTEROID_THRESHOLD) {
+        toPromote.push(d);
+        return false;
+      }
+      return true;
+    });
+    for (const d of toPromote) {
+      this.asteroids.push(new Asteroid(d.x, d.y, d.vx, d.vy, d.mass));
+    }
+  }
+
+  /** Each asteroid vacuums up overlapping dust via momentum-conserving absorption. */
+  private asteroidAbsorbsDust() {
+    let anyConsumed = false;
+    for (const a of this.asteroids) {
+      const ar = a.radius;
+      for (const d of this.dust) {
+        if (!d.active) continue;
+        const dx = d.x - a.x;
+        const dy = d.y - a.y;
+        if (dx * dx + dy * dy < (ar + d.radius) * (ar + d.radius)) {
+          const tm = a.mass + d.mass;
+          a.vx = (a.vx * a.mass + d.vx * d.mass) / tm;
+          a.vy = (a.vy * a.mass + d.vy * d.mass) / tm;
+          a.x  = (a.x  * a.mass + d.x  * d.mass) / tm;
+          a.y  = (a.y  * a.mass + d.y  * d.mass) / tm;
+          a.mass = tm;
+          d.active = false;
+          anyConsumed = true;
+        }
+      }
+    }
+    if (anyConsumed) this.dust = this.dust.filter(d => d.active);
+  }
+
+  /** Larger asteroid merges with smaller on overlap (planet formation). */
+  private mergeAsteroids() {
+    let anyMerged = false;
+    for (let i = 0; i < this.asteroids.length; i++) {
+      const a = this.asteroids[i];
+      if (!a.active) continue;
+      for (let j = i + 1; j < this.asteroids.length; j++) {
+        const b = this.asteroids[j];
+        if (!b.active) continue;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const minDist = a.radius + b.radius;
+        if (dx * dx + dy * dy < minDist * minDist) {
+          const bigger  = a.mass >= b.mass ? a : b;
+          const smaller = bigger === a ? b : a;
+          const tm = bigger.mass + smaller.mass;
+          bigger.vx = (bigger.vx * bigger.mass + smaller.vx * smaller.mass) / tm;
+          bigger.vy = (bigger.vy * bigger.mass + smaller.vy * smaller.mass) / tm;
+          bigger.x  = (bigger.x  * bigger.mass + smaller.x  * smaller.mass) / tm;
+          bigger.y  = (bigger.y  * bigger.mass + smaller.y  * smaller.mass) / tm;
+          bigger.mass = tm;
+          smaller.active = false;
+          anyMerged = true;
+        }
+      }
+    }
+    if (anyMerged) this.asteroids = this.asteroids.filter(a => a.active);
+  }
+
   private drawScene() {
     this.gfx.clear();
 
-    // ── Draw dust — color shifts from blue (tiny) to orange-red (asteroid) ──
+    // ── Draw dust — color shifts from blue (tiny) to orange (medium) ────
     for (const d of this.dust) {
       const r = Math.max(1.5, d.radius);
-      // t: 0 at mass=2 (dust), 1 at mass=100 (small asteroid)
-      const t = Math.min(1, Math.log(Math.max(1, d.mass / 2)) / Math.log(50));
+      // t: 0 at mass=2 (dust), 1 at mass=ASTEROID_THRESHOLD
+      const t = Math.min(1, Math.log(Math.max(1, d.mass / 2)) / Math.log(25));
       const ri = Math.round(0x88 + t * (0xff - 0x88));
       const gi = Math.round(0xaa + t * (0x55 - 0xaa));
       const bi = Math.round(0xff + t * (0x11 - 0xff));
@@ -552,10 +766,11 @@ export class Main extends Phaser.Scene {
       const alpha = 0.55 + t * 0.35;
       this.gfx.fillStyle(color, alpha);
       this.gfx.fillCircle(d.x, d.y, r);
-      if (d.mass > 20) {
-        this.gfx.lineStyle(Math.max(1, r * 0.08), 0xffffff, 0.3);
-        this.gfx.strokeCircle(d.x, d.y, r);
-      }
+    }
+
+    // ── Draw asteroids — craggy polygons, gray-brown-white by mass ───────
+    for (const a of this.asteroids) {
+      this.drawAsteroid(a);
     }
 
     const { x, y, radius, rotation, mass, thrustingThisFrame } = this.player;
@@ -566,10 +781,8 @@ export class Main extends Phaser.Scene {
       const sin = Math.sin(rotation);
       const flameX = x - cos * radius;
       const flameY = y - sin * radius;
-      // Outer glow
       this.gfx.fillStyle(0xff4400, 0.3);
       this.gfx.fillCircle(flameX, flameY, radius * 0.55);
-      // Inner core
       this.gfx.fillStyle(0xffee00, 0.8);
       this.gfx.fillCircle(flameX, flameY, radius * 0.25);
     }
@@ -578,15 +791,13 @@ export class Main extends Phaser.Scene {
     this.gfx.fillStyle(0xffffff, 0.04);
     this.gfx.fillCircle(x, y, radius * 2.2);
 
-    // ── Player body ──────────────────────────────────────────────────────
-    // Color shifts from blue → yellow → red as mass grows
+    // ── Player body — color shifts blue → yellow → red with mass ─────────
     const t = Math.min(1, mass / 5000);
-    const hue = (1 - t) * 0.65; // 0.65 = blue, 0 = red
+    const hue = (1 - t) * 0.65;
     const playerColor = Phaser.Display.Color.HSLToColor(hue, 0.9, 0.6).color;
     this.gfx.fillStyle(playerColor, 1);
     this.gfx.fillCircle(x, y, radius);
 
-    // ── Outline ──────────────────────────────────────────────────────────
     this.gfx.lineStyle(Math.max(1, radius * 0.04), 0xffffff, 0.7);
     this.gfx.strokeCircle(x, y, radius);
 
@@ -601,6 +812,54 @@ export class Main extends Phaser.Scene {
       x + cos * tipLen,
       y + sin * tipLen
     );
+  }
+
+  private drawAsteroid(a: Asteroid) {
+    const r = a.radius;
+    const n = ASTEROID_VERTICES;
+
+    // Color: dark gray → brown → pale gold as mass grows (ASTEROID_THRESHOLD → PLANET_THRESHOLD)
+    const t = Math.min(1, Math.log(Math.max(1, a.mass / ASTEROID_THRESHOLD)) / Math.log(PLANET_THRESHOLD / ASTEROID_THRESHOLD));
+    const ri = Math.round(0x66 + t * (0xcc - 0x66));
+    const gi = Math.round(0x55 + t * (0x99 - 0x55));
+    const bi = Math.round(0x44 + t * (0x44 - 0x44));
+    const fillColor = (ri << 16) | (gi << 8) | bi;
+
+    // Draw filled polygon
+    this.gfx.fillStyle(fillColor, 1);
+    this.gfx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const angle = a.rotation + (i / n) * Math.PI * 2;
+      const vr = r * a.shapeOffsets[i];
+      const vx = a.x + Math.cos(angle) * vr;
+      const vy = a.y + Math.sin(angle) * vr;
+      if (i === 0) this.gfx.moveTo(vx, vy);
+      else         this.gfx.lineTo(vx, vy);
+    }
+    this.gfx.closePath();
+    this.gfx.fillPath();
+
+    // Craggy outline — brighter for larger bodies
+    const outlineAlpha = 0.4 + t * 0.4;
+    const outlineColor = t > 0.7 ? 0xffdd88 : 0xaaaaaa;
+    this.gfx.lineStyle(Math.max(1, r * 0.06), outlineColor, outlineAlpha);
+    this.gfx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const angle = a.rotation + (i / n) * Math.PI * 2;
+      const vr = r * a.shapeOffsets[i];
+      const vx = a.x + Math.cos(angle) * vr;
+      const vy = a.y + Math.sin(angle) * vr;
+      if (i === 0) this.gfx.moveTo(vx, vy);
+      else         this.gfx.lineTo(vx, vy);
+    }
+    this.gfx.closePath();
+    this.gfx.strokePath();
+
+    // Planet glow for large bodies
+    if (a.mass >= PLANET_THRESHOLD) {
+      this.gfx.fillStyle(0xffdd44, 0.06);
+      this.gfx.fillCircle(a.x, a.y, r * 2.0);
+    }
   }
 
   private drawGrid() {
