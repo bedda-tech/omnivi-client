@@ -28,6 +28,19 @@ const GRAVITY_THETA = 0.5;       // Barnes-Hut approximation threshold
 const GRAVITY_MIN_DIST_SQ = 900; // 30px — avoid singularity
 const MAX_G_ACCEL = 500;         // px/s² cap (prevents lag-spike explosions)
 
+// ─── Black Hole / Big Shrink ─────────────────────────────────────────────────
+const SHRINK_START_DELAY = 90;    // seconds of normal play before Big Shrink
+const BH_INITIAL_MASS    = 8000;  // starting BH mass (radius ≈ 179px)
+const BH_GROWTH_RATE     = 200;   // mass/second added to BH
+const BH_GRAVITY_MULT    = 5.0;   // BH gravity multiplier over GRAVITY_G
+
+// ─── Escape Sequence ────────────────────────────────────────────────────────
+const ESCAPE_DURATION      = 12;    // seconds to complete escape
+const ESCAPE_MIN_DIST      = 1600;  // must be this far from world center (px)
+const ESCAPE_DISRUPT_RATIO = 0.5;   // disrupted if hit by object > this × player mass
+
+type GamePhase = 'playing' | 'shrinking' | 'escaped' | 'consumed';
+
 function massToRadius(mass: number): number {
   return Math.sqrt(mass) * RADIUS_SCALE;
 }
@@ -265,9 +278,13 @@ export class Main extends Phaser.Scene {
   // Rendering
   private gfx!: Phaser.GameObjects.Graphics;
   private gridGfx!: Phaser.GameObjects.Graphics;
+  private vignetteGfx!: Phaser.GameObjects.Graphics;  // screen-space overlay
 
   // HUD
   private massText!: Phaser.GameObjects.Text;
+  private phaseText!: Phaser.GameObjects.Text;        // phase/escape status (center-top)
+  private endText!: Phaser.GameObjects.Text;
+  private restartText!: Phaser.GameObjects.Text;
 
   // Input
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -275,6 +292,7 @@ export class Main extends Phaser.Scene {
   private keyA!: Phaser.Input.Keyboard.Key;
   private keyS!: Phaser.Input.Keyboard.Key;
   private keyD!: Phaser.Input.Keyboard.Key;
+  private keyE!: Phaser.Input.Keyboard.Key;           // initiate escape
   private pointer!: Phaser.Input.Pointer;
   private mouseDown: boolean = false;
   private gamepad: Phaser.Input.Gamepad.Gamepad | null = null;
@@ -283,6 +301,15 @@ export class Main extends Phaser.Scene {
   private useMouse: boolean = true;
   private useKeyboard: boolean = false;
   private useGamepad: boolean = false;
+
+  // ── Game phase / Big Shrink state ──────────────────────────────────────
+  private phase!: GamePhase;
+  private gameTimer!: number;       // seconds elapsed since game start
+  private shrinkTimer!: number;     // seconds elapsed since shrink started
+  private bhMass!: number;          // black hole mass (grows during shrink)
+  private escaping!: boolean;       // player is in escape countdown
+  private escapeTimer!: number;     // seconds remaining in escape countdown
+  private disruptFlash!: number;    // seconds remaining for disruption red flash
 
   constructor() {
     super("Main");
@@ -300,10 +327,15 @@ export class Main extends Phaser.Scene {
     // Main dynamic graphics
     this.gfx = this.add.graphics();
 
+    // Screen-space overlay (vignette, disruption flash)
+    this.vignetteGfx = this.add.graphics().setScrollFactor(0).setDepth(18);
+
     // Player
     this.player = new Player(WORLD_SIZE / 2, WORLD_SIZE / 2, STARTING_MASS);
 
     // Seed initial dust scattered around the world
+    this.dust = [];
+    this.asteroids = [];
     for (let i = 0; i < INITIAL_DUST_COUNT; i++) {
       const x = Math.random() * WORLD_SIZE;
       const y = Math.random() * WORLD_SIZE;
@@ -328,6 +360,15 @@ export class Main extends Phaser.Scene {
       );
     }
 
+    // ── Game state (reset on restart) ──────────────────────────────────
+    this.phase       = 'playing';
+    this.gameTimer   = 0;
+    this.shrinkTimer = 0;
+    this.bhMass      = BH_INITIAL_MASS;
+    this.escaping    = false;
+    this.escapeTimer = 0;
+    this.disruptFlash = 0;
+
     // HUD elements — setScrollFactor(0) pins them to the screen
     this.massText = this.add
       .text(16, 16, "", {
@@ -350,12 +391,53 @@ export class Main extends Phaser.Scene {
       .setScrollFactor(0)
       .setDepth(20);
 
+    // Phase/escape status — centered at top
+    this.phaseText = this.add
+      .text(512, 12, "", {
+        fontSize: "15px",
+        color: "#ffcc00",
+        stroke: "#000000",
+        strokeThickness: 3,
+        align: "center",
+      })
+      .setScrollFactor(0)
+      .setDepth(20)
+      .setOrigin(0.5, 0);
+
+    // End-screen overlay elements (hidden until game ends)
+    this.endText = this.add
+      .text(512, 260, "", {
+        fontFamily: "Arial Black",
+        fontSize: "44px",
+        color: "#ffffff",
+        stroke: "#000000",
+        strokeThickness: 6,
+        align: "center",
+      })
+      .setScrollFactor(0)
+      .setDepth(30)
+      .setOrigin(0.5)
+      .setVisible(false);
+
+    this.restartText = this.add
+      .text(512, 350, "Press  R  to play again", {
+        fontSize: "20px",
+        color: "#cccccc",
+        stroke: "#000000",
+        strokeThickness: 3,
+      })
+      .setScrollFactor(0)
+      .setDepth(30)
+      .setOrigin(0.5)
+      .setVisible(false);
+
     // Keyboard input
     this.cursors = this.input.keyboard!.createCursorKeys();
     this.keyW = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.W);
     this.keyA = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.A);
     this.keyS = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.S);
     this.keyD = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.D);
+    this.keyE = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.E);
 
     // Mouse input
     this.pointer = this.input.activePointer;
@@ -392,6 +474,19 @@ export class Main extends Phaser.Scene {
 
   update(_time: number, delta: number) {
     const dt = Math.min(delta / 1000, 0.05); // cap at 50 ms to prevent lag-spike explosions
+
+    // ── Timer & phase transitions ────────────────────────────────────────
+    this.gameTimer += dt;
+    if (this.phase === 'playing' && this.gameTimer >= SHRINK_START_DELAY) {
+      this.phase = 'shrinking';
+    }
+
+    // ── Freeze game logic when ended; still draw and handle R key ───────
+    if (this.phase === 'escaped' || this.phase === 'consumed') {
+      this.drawVignette();
+      this.drawScene();
+      return;
+    }
 
     // ── Determine input mode ────────────────────────────────────────────
     const keyLeft = this.cursors.left?.isDown || this.keyA.isDown;
@@ -593,6 +688,12 @@ export class Main extends Phaser.Scene {
       if (absorbed) this.asteroids = this.asteroids.filter(a => a.active);
     }
 
+    // ── The Big Shrink: black hole physics ─────────────────────────────
+    if (this.phase === 'shrinking') {
+      this.updateBlackHole(dt);
+      this.updateEscape(dt);
+    }
+
     // ── Camera: follow player with dynamic zoom ─────────────────────────
     const targetZoom = Phaser.Math.Clamp(550 / this.player.radius, 0.15, 3);
     const currentZoom = this.cameras.main.zoom;
@@ -615,15 +716,207 @@ export class Main extends Phaser.Scene {
       ].join("\n")
     );
 
+    this.updatePhaseHUD();
+
     // ── Render ──────────────────────────────────────────────────────────
+    this.drawVignette();
     this.drawScene();
   }
 
-  /**
-   * Spatial-grid O(n) dust-to-dust collision and merging.
-   * Particles that overlap combine via momentum conservation.
-   * Also respawns ambient dust when the world gets sparse.
-   */
+  // ─── Black Hole Update ─────────────────────────────────────────────────────
+  private updateBlackHole(dt: number) {
+    this.shrinkTimer += dt;
+    this.bhMass += BH_GROWTH_RATE * dt;
+
+    const bhR  = massToRadius(this.bhMass);
+    const bx   = WORLD_SIZE / 2;
+    const by   = WORLD_SIZE / 2;
+    const bhG  = GRAVITY_G * BH_GRAVITY_MULT;
+
+    // BH gravity + absorption for dust
+    for (const d of this.dust) {
+      const dx = bx - d.x;
+      const dy = by - d.y;
+      const dSq  = Math.max(dx * dx + dy * dy, GRAVITY_MIN_DIST_SQ);
+      const dist = Math.sqrt(dSq);
+      const a    = bhG * this.bhMass / dSq;
+      d.vx += a * dx / dist * dt;
+      d.vy += a * dy / dist * dt;
+      if (dist < bhR + d.radius) d.active = false;
+    }
+    this.dust = this.dust.filter(d => d.active);
+
+    // BH gravity + absorption for asteroids
+    for (const a of this.asteroids) {
+      const dx = bx - a.x;
+      const dy = by - a.y;
+      const dSq  = Math.max(dx * dx + dy * dy, GRAVITY_MIN_DIST_SQ);
+      const dist = Math.sqrt(dSq);
+      const ag   = bhG * this.bhMass / dSq;
+      let agx = ag * dx / dist;
+      let agy = ag * dy / dist;
+      const amag = Math.hypot(agx, agy);
+      if (amag > MAX_G_ACCEL) { agx = agx / amag * MAX_G_ACCEL; agy = agy / amag * MAX_G_ACCEL; }
+      a.vx += agx * dt;
+      a.vy += agy * dt;
+      if (dist < bhR + a.radius) {
+        this.bhMass += a.mass * 0.3; // BH grows as it consumes mass
+        a.active = false;
+      }
+    }
+    this.asteroids = this.asteroids.filter(a => a.active);
+
+    // BH gravity on player
+    const pdx  = bx - this.player.x;
+    const pdy  = by - this.player.y;
+    const pdSq = Math.max(pdx * pdx + pdy * pdy, GRAVITY_MIN_DIST_SQ);
+    const pdist = Math.sqrt(pdSq);
+    let pag  = bhG * this.bhMass / pdSq;
+    let pagX = pag * pdx / pdist;
+    let pagY = pag * pdy / pdist;
+    const pagMag = Math.hypot(pagX, pagY);
+    if (pagMag > MAX_G_ACCEL) { pagX = pagX / pagMag * MAX_G_ACCEL; pagY = pagY / pagMag * MAX_G_ACCEL; }
+    this.player.vx += pagX * dt;
+    this.player.vy += pagY * dt;
+
+    // Player consumed by BH
+    if (pdist < bhR + this.player.radius) {
+      this.phase = 'consumed';
+      this.showEndScreen(false);
+      return;
+    }
+
+    // Disruption: BH gravity too strong while escaping
+    if (this.escaping && pagMag > MAX_G_ACCEL * 0.45) {
+      this.disruptEscape("Too close to the singularity!");
+    }
+  }
+
+  // ─── Escape Sequence Update ────────────────────────────────────────────────
+  private updateEscape(dt: number) {
+    // E key: start or cancel escape
+    if (Phaser.Input.Keyboard.JustDown(this.keyE)) {
+      if (!this.escaping) {
+        const distFromCenter = Math.hypot(
+          this.player.x - WORLD_SIZE / 2,
+          this.player.y - WORLD_SIZE / 2
+        );
+        if (distFromCenter >= ESCAPE_MIN_DIST) {
+          this.escaping    = true;
+          this.escapeTimer = ESCAPE_DURATION;
+        } else {
+          // Too close — flash a warning
+          this.disruptFlash = 1.5;
+          this.phaseText.setText("TOO CLOSE TO CENTER — move to the outer edge!");
+        }
+      } else {
+        // Cancel escape
+        this.escaping    = false;
+        this.escapeTimer = 0;
+      }
+    }
+
+    if (!this.escaping) return;
+
+    this.escapeTimer -= dt;
+    if (this.disruptFlash > 0) this.disruptFlash -= dt;
+
+    // Disruption: nearby asteroid/dust bigger than ESCAPE_DISRUPT_RATIO × player mass
+    for (const a of this.asteroids) {
+      if (a.mass < this.player.mass * ESCAPE_DISRUPT_RATIO) continue;
+      const dx = a.x - this.player.x;
+      const dy = a.y - this.player.y;
+      if (dx * dx + dy * dy < (this.player.radius + a.radius) ** 2) {
+        this.disruptEscape("Escape disrupted — impact!");
+        return;
+      }
+    }
+
+    // Escape complete!
+    if (this.escapeTimer <= 0) {
+      this.phase = 'escaped';
+      this.showEndScreen(true);
+    }
+  }
+
+  private disruptEscape(reason: string) {
+    this.escaping     = false;
+    this.escapeTimer  = 0;
+    this.disruptFlash = 1.2;
+    this.phaseText.setText(reason).setColor("#ff4400");
+  }
+
+  private showEndScreen(escaped: boolean) {
+    const mass = Math.floor(this.player.mass);
+
+    // Semi-transparent dark overlay
+    const gw = this.scale.width;
+    const gh = this.scale.height;
+    const overlay = this.add.graphics().setScrollFactor(0).setDepth(25);
+    overlay.fillStyle(0x000000, 0.55);
+    overlay.fillRect(0, 0, gw, gh);
+
+    if (escaped) {
+      this.endText
+        .setText(`ESCAPED!\nFinal Mass: ${mass}`)
+        .setColor("#00ffaa")
+        .setVisible(true);
+    } else {
+      this.endText
+        .setText(`CONSUMED BY THE VOID\nFinal Mass: ${mass}`)
+        .setColor("#ff5500")
+        .setVisible(true);
+    }
+    this.restartText.setVisible(true);
+
+    this.input.keyboard!.once("keydown-R", () => {
+      this.scene.restart();
+    });
+  }
+
+  // ─── Phase HUD ─────────────────────────────────────────────────────────────
+  private updatePhaseHUD() {
+    if (this.phase === 'playing') {
+      const remaining = SHRINK_START_DELAY - this.gameTimer;
+      if (remaining <= 30) {
+        this.phaseText
+          .setText(`⚠  BIG SHRINK IN  ${remaining.toFixed(0)}s  ⚠`)
+          .setColor("#ff8800");
+      } else {
+        this.phaseText.setText("");
+      }
+      return;
+    }
+
+    if (this.phase === 'shrinking') {
+      if (this.escaping) {
+        const t = this.time.now / 1000;
+        const pulse = Math.sin(t * 6) > 0 ? "#00ffaa" : "#ffffff";
+        this.phaseText
+          .setText(`ESCAPING...  ${this.escapeTimer.toFixed(1)}s`)
+          .setColor(pulse);
+      } else if (this.disruptFlash > 0) {
+        // phaseText already set by disruptEscape/warning — leave it
+      } else {
+        const distFromCenter = Math.hypot(
+          this.player.x - WORLD_SIZE / 2,
+          this.player.y - WORLD_SIZE / 2
+        );
+        const canEscape = distFromCenter >= ESCAPE_MIN_DIST;
+        if (canEscape) {
+          this.phaseText
+            .setText("THE BIG SHRINK  |  Press  [E]  to ESCAPE")
+            .setColor("#ffcc00");
+        } else {
+          this.phaseText
+            .setText("THE BIG SHRINK  |  Move to the outer edge to escape")
+            .setColor("#ff8800");
+        }
+      }
+    }
+  }
+
+  // ─── Spatial-grid dust merging ─────────────────────────────────────────────
   private mergeDust() {
     const CELL = 40; // grid cell size — covers max small-dust diameter well
     const grid = new Map<number, DustParticle[]>();
@@ -751,8 +1044,15 @@ export class Main extends Phaser.Scene {
     if (anyMerged) this.asteroids = this.asteroids.filter(a => a.active);
   }
 
+  // ─── Rendering ─────────────────────────────────────────────────────────────
+
   private drawScene() {
     this.gfx.clear();
+
+    // Draw black hole first (underneath everything)
+    if (this.phase === 'shrinking' || this.phase === 'escaped' || this.phase === 'consumed') {
+      this.drawBlackHole();
+    }
 
     // ── Draw dust — color shifts from blue (tiny) to orange (medium) ────
     for (const d of this.dust) {
@@ -774,6 +1074,11 @@ export class Main extends Phaser.Scene {
     }
 
     const { x, y, radius, rotation, mass, thrustingThisFrame } = this.player;
+
+    // ── Escape aura (drawn behind player) ───────────────────────────────
+    if (this.escaping) {
+      this.drawEscapeAura(x, y, radius);
+    }
 
     // ── Thrust exhaust flame ─────────────────────────────────────────────
     if (thrustingThisFrame) {
@@ -812,6 +1117,91 @@ export class Main extends Phaser.Scene {
       x + cos * tipLen,
       y + sin * tipLen
     );
+  }
+
+  /** Animated black hole at world center. */
+  private drawBlackHole() {
+    const bx  = WORLD_SIZE / 2;
+    const by  = WORLD_SIZE / 2;
+    const bhR = massToRadius(this.bhMass);
+    const t   = this.time.now / 1000;
+
+    // Outer gravitational lensing rings (faint, decreasing brightness outward)
+    const lensRadii = [4.0, 3.0, 2.2, 1.6];
+    const lensAlpha = [0.02, 0.04, 0.06, 0.08];
+    for (let i = 0; i < lensRadii.length; i++) {
+      this.gfx.fillStyle(0xff6600, lensAlpha[i]);
+      this.gfx.fillCircle(bx, by, bhR * lensRadii[i]);
+    }
+
+    // Accretion disk — swirling hotspots orbiting the BH
+    const numSpots = 10;
+    for (let i = 0; i < numSpots; i++) {
+      const angle  = (i / numSpots) * Math.PI * 2 + t * (1.2 + i * 0.08);
+      const arcR   = bhR * (1.15 + 0.3 * Math.sin(i * 1.7 + t * 0.5));
+      const ax     = bx + Math.cos(angle) * arcR;
+      const ay     = by + Math.sin(angle) * arcR;
+      const brightness = 0.1 + 0.15 * Math.sin(t * 3 + i * 0.9);
+      // Color cycles orange → white near center
+      const spotHue = 0.04 + 0.04 * Math.sin(t + i);
+      const spotColor = Phaser.Display.Color.HSLToColor(spotHue, 0.9, 0.55).color;
+      this.gfx.fillStyle(spotColor, Math.max(0.05, brightness));
+      this.gfx.fillCircle(ax, ay, bhR * 0.14);
+    }
+
+    // Photon sphere ring
+    this.gfx.lineStyle(Math.max(2, bhR * 0.04), 0xff9900, 0.5 + 0.3 * Math.sin(t * 2));
+    this.gfx.strokeCircle(bx, by, bhR * 1.1);
+
+    // Event horizon — pure black
+    this.gfx.fillStyle(0x000000, 1);
+    this.gfx.fillCircle(bx, by, bhR);
+
+    // Thin bright rim at event horizon edge
+    this.gfx.lineStyle(Math.max(1.5, bhR * 0.03), 0xffcc44, 0.7);
+    this.gfx.strokeCircle(bx, by, bhR);
+  }
+
+  /** Pulsing escape aura drawn around the player. */
+  private drawEscapeAura(x: number, y: number, radius: number) {
+    const t     = this.time.now / 1000;
+    const pulse = 0.5 + 0.5 * Math.sin(t * 6);
+
+    this.gfx.lineStyle(5 + pulse * 4, 0x00ffaa, 0.35 + pulse * 0.45);
+    this.gfx.strokeCircle(x, y, radius * 1.6 + pulse * 10);
+
+    this.gfx.lineStyle(2, 0xffffff, 0.5 + pulse * 0.4);
+    this.gfx.strokeCircle(x, y, radius * 1.25 + pulse * 5);
+  }
+
+  /** Screen-space vignette + disruption flash (drawn to vignetteGfx). */
+  private drawVignette() {
+    this.vignetteGfx.clear();
+
+    const gw = this.scale.width;
+    const gh = this.scale.height;
+
+    // Disruption flash (red) — shown for any disruption/warning
+    if (this.disruptFlash > 0) {
+      const alpha = Math.min(0.4, this.disruptFlash * 0.33);
+      this.vignetteGfx.fillStyle(0xff2200, alpha);
+      this.vignetteGfx.fillRect(0, 0, gw, gh);
+      return;
+    }
+
+    if (this.phase !== 'shrinking') return;
+
+    // Darkness creeps in as player approaches BH
+    const distFromBH = Math.hypot(
+      this.player.x - WORLD_SIZE / 2,
+      this.player.y - WORLD_SIZE / 2
+    );
+    const bhR  = massToRadius(this.bhMass);
+    const danger = Math.max(0, 1 - distFromBH / (bhR * 9));
+    if (danger > 0) {
+      this.vignetteGfx.fillStyle(0x000000, danger * 0.55);
+      this.vignetteGfx.fillRect(0, 0, gw, gh);
+    }
   }
 
   private drawAsteroid(a: Asteroid) {
