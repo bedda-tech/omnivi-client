@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 import { EventBus } from "../EventBus";
+import { NetworkManager } from "../NetworkManager";
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 const WORLD_SIZE = 5000;
@@ -43,6 +44,18 @@ type GamePhase = 'playing' | 'shrinking' | 'escaped' | 'consumed';
 
 function massToRadius(mass: number): number {
   return Math.sqrt(mass) * RADIUS_SCALE;
+}
+
+/** Parse "hsl(H,S%,L%)" → Phaser hex color int (fast, good-enough for integer hue). */
+function parseHslColor(hsl: string): number {
+  // Match hsl(hue, sat%, lig%) — handles space/no-space variants
+  const m = hsl.match(/hsl\(\s*(\d+)\s*,\s*(\d+)%\s*,\s*(\d+)%/i);
+  if (!m) return 0xffffff;
+  return Phaser.Display.Color.HSLToColor(
+    parseInt(m[1]) / 360,
+    parseInt(m[2]) / 100,
+    parseInt(m[3]) / 100,
+  ).color;
 }
 
 // ─── Dust ──────────────────────────────────────────────────────────────────
@@ -302,6 +315,11 @@ export class Main extends Phaser.Scene {
   private useKeyboard: boolean = false;
   private useGamepad: boolean = false;
 
+  // ── Multiplayer ─────────────────────────────────────────────────────────
+  private net: NetworkManager | null = null;
+  private sendTimer: number = 0;    // seconds since last network send
+  private readonly SEND_RATE = 1 / 20; // 20 Hz
+
   // ── Game phase / Big Shrink state ──────────────────────────────────────
   private phase!: GamePhase;
   private gameTimer!: number;       // seconds elapsed since game start
@@ -468,6 +486,13 @@ export class Main extends Phaser.Scene {
     // Initial camera
     this.cameras.main.setZoom(1);
     this.cameras.main.centerOn(this.player.x, this.player.y);
+
+    // ── Network: connect to Colyseus server (graceful if offline) ─────
+    this.net = new NetworkManager();
+    this.net.connect().catch((err: unknown) => {
+      console.warn("[Net] Server unavailable — playing offline:", err);
+      this.net = null;
+    });
 
     EventBus.emit("current-scene-ready", this);
   }
@@ -694,6 +719,19 @@ export class Main extends Phaser.Scene {
       this.updateEscape(dt);
     }
 
+    // ── Network: send local player state at 20 Hz ──────────────────────
+    this.sendTimer += dt;
+    if (this.net && this.sendTimer >= this.SEND_RATE) {
+      this.sendTimer = 0;
+      this.net.sendPlayerState(
+        this.player.x, this.player.y,
+        this.player.vx, this.player.vy,
+        this.player.mass,
+        thrusting,
+        this.escaping,
+      );
+    }
+
     // ── Camera: follow player with dynamic zoom ─────────────────────────
     const targetZoom = Phaser.Math.Clamp(550 / this.player.radius, 0.15, 3);
     const currentZoom = this.cameras.main.zoom;
@@ -782,6 +820,7 @@ export class Main extends Phaser.Scene {
     // Player consumed by BH
     if (pdist < bhR + this.player.radius) {
       this.phase = 'consumed';
+      this.net?.sendConsumed();
       this.showEndScreen(false);
       return;
     }
@@ -835,6 +874,7 @@ export class Main extends Phaser.Scene {
     // Escape complete!
     if (this.escapeTimer <= 0) {
       this.phase = 'escaped';
+      this.net?.sendEscaped();
       this.showEndScreen(true);
     }
   }
@@ -1054,6 +1094,9 @@ export class Main extends Phaser.Scene {
       this.drawBlackHole();
     }
 
+    // ── Draw remote players (ghost players behind local) ─────────────────
+    this.drawRemotePlayers();
+
     // ── Draw dust — color shifts from blue (tiny) to orange (medium) ────
     for (const d of this.dust) {
       const r = Math.max(1.5, d.radius);
@@ -1250,6 +1293,46 @@ export class Main extends Phaser.Scene {
       this.gfx.fillStyle(0xffdd44, 0.06);
       this.gfx.fillCircle(a.x, a.y, r * 2.0);
     }
+  }
+
+  /** Render all remote players as tinted circles with mass labels. */
+  private drawRemotePlayers() {
+    if (!this.net) return;
+    for (const [, rp] of this.net.otherPlayers) {
+      if (rp.phase !== "alive") continue;
+      const r = Math.sqrt(rp.mass) * 2; // massToRadius
+      // Parse HSL color string into a hex int Phaser can use
+      const color = parseHslColor(rp.color);
+
+      // Subtle glow
+      this.gfx.fillStyle(color, 0.08);
+      this.gfx.fillCircle(rp.x, rp.y, r * 2.0);
+
+      // Body
+      this.gfx.fillStyle(color, 0.75);
+      this.gfx.fillCircle(rp.x, rp.y, r);
+
+      // Outline
+      this.gfx.lineStyle(Math.max(1, r * 0.04), 0xffffff, 0.5);
+      this.gfx.strokeCircle(rp.x, rp.y, r);
+
+      // Thrust flash
+      if (rp.isThrusting) {
+        this.gfx.fillStyle(0xff6600, 0.35);
+        this.gfx.fillCircle(rp.x, rp.y, r * 0.4);
+      }
+
+      // Escape aura
+      if (rp.isEscaping) {
+        this.gfx.lineStyle(3, 0x00ffaa, 0.4);
+        this.gfx.strokeCircle(rp.x, rp.y, r * 1.5);
+      }
+    }
+  }
+
+  shutdown() {
+    this.net?.disconnect();
+    this.net = null;
   }
 
   private drawGrid() {
