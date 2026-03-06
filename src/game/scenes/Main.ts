@@ -298,6 +298,8 @@ export class Main extends Phaser.Scene {
   private phaseText!: Phaser.GameObjects.Text;        // phase/escape status (center-top)
   private endText!: Phaser.GameObjects.Text;
   private restartText!: Phaser.GameObjects.Text;
+  private minimapGfx!: Phaser.GameObjects.Graphics;  // screen-space minimap overlay
+  private leaderboardText!: Phaser.GameObjects.Text; // top-right mass ranking
 
   // Input
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -451,6 +453,23 @@ export class Main extends Phaser.Scene {
       .setDepth(30)
       .setOrigin(0.5)
       .setVisible(false);
+
+    // Minimap — screen-space overlay, bottom-right
+    this.minimapGfx = this.add.graphics().setScrollFactor(0).setDepth(22);
+
+    // Leaderboard — top-right, right-anchored
+    this.leaderboardText = this.add
+      .text(this.scale.width - 14, 14, "", {
+        fontSize: "13px",
+        color: "#dddddd",
+        stroke: "#000000",
+        strokeThickness: 3,
+        lineSpacing: 3,
+        fontFamily: "monospace",
+      })
+      .setScrollFactor(0)
+      .setDepth(22)
+      .setOrigin(1, 0);
 
     // Keyboard input
     this.cursors = this.input.keyboard!.createCursorKeys();
@@ -765,6 +784,8 @@ export class Main extends Phaser.Scene {
     // ── Render ──────────────────────────────────────────────────────────
     this.drawVignette();
     this.drawScene();
+    this.drawMinimap();
+    this.drawLeaderboard();
   }
 
   // ─── Black Hole Update ─────────────────────────────────────────────────────
@@ -1377,6 +1398,90 @@ export class Main extends Phaser.Scene {
         this.gfx.strokeCircle(rp.x, rp.y, r * 1.5);
       }
     }
+  }
+
+  // ─── Minimap ───────────────────────────────────────────────────────────────
+  private drawMinimap() {
+    const gw = this.scale.width;
+    const gh = this.scale.height;
+    const MM_SIZE = 160;
+    const MM_PAD  = 12;
+    const mmX  = gw - MM_SIZE - MM_PAD;   // top-left of minimap in screen coords
+    const mmY  = gh - MM_SIZE - MM_PAD;
+    const sc   = MM_SIZE / WORLD_SIZE;     // world → minimap scale
+
+    this.minimapGfx.clear();
+
+    // Background
+    this.minimapGfx.fillStyle(0x000818, 0.65);
+    this.minimapGfx.fillRect(mmX, mmY, MM_SIZE, MM_SIZE);
+
+    // Border
+    this.minimapGfx.lineStyle(1, 0x334455, 0.9);
+    this.minimapGfx.strokeRect(mmX, mmY, MM_SIZE, MM_SIZE);
+
+    const wx = (wx: number) => mmX + wx * sc;
+    const wy = (wy: number) => mmY + wy * sc;
+
+    // Black hole at world center (visible during shrink phase)
+    if (this.phase === 'shrinking' || this.phase === 'escaped' || this.phase === 'consumed') {
+      const bhR = Math.max(3, Math.min(massToRadius(this.bhMass) * sc, 14));
+      this.minimapGfx.fillStyle(0xff6600, 0.9);
+      this.minimapGfx.fillCircle(wx(WORLD_SIZE / 2), wy(WORLD_SIZE / 2), bhR);
+      this.minimapGfx.fillStyle(0x000000, 1);
+      this.minimapGfx.fillCircle(wx(WORLD_SIZE / 2), wy(WORLD_SIZE / 2), bhR * 0.65);
+    }
+
+    // Asteroids — gray; planets — gold
+    for (const a of this.asteroids) {
+      const isPlanet = a.mass >= PLANET_THRESHOLD;
+      this.minimapGfx.fillStyle(isPlanet ? 0xffdd88 : 0x778899, isPlanet ? 0.85 : 0.55);
+      this.minimapGfx.fillCircle(wx(a.x), wy(a.y), isPlanet ? 3 : 1.5);
+    }
+
+    // Remote players — their hue-colored dots
+    if (this.net) {
+      for (const [, rp] of this.net.otherPlayers) {
+        if (rp.phase !== "alive") continue;
+        this.minimapGfx.fillStyle(parseHslColor(rp.color), 0.9);
+        this.minimapGfx.fillCircle(wx(rp.x), wy(rp.y), 3);
+      }
+    }
+
+    // Local player — bright white with cyan ring to distinguish
+    this.minimapGfx.fillStyle(0xffffff, 1);
+    this.minimapGfx.fillCircle(wx(this.player.x), wy(this.player.y), 3);
+    this.minimapGfx.lineStyle(1.5, 0x00ffff, 0.9);
+    this.minimapGfx.strokeCircle(wx(this.player.x), wy(this.player.y), 5);
+
+    // "MAP" label at top-left corner of minimap
+    // (skipped — minimalist look is cleaner)
+  }
+
+  // ─── Leaderboard ───────────────────────────────────────────────────────────
+  private drawLeaderboard() {
+    type Entry = { label: string; mass: number; isLocal: boolean };
+    const entries: Entry[] = [
+      { label: "YOU", mass: this.player.mass, isLocal: true },
+    ];
+    if (this.net) {
+      for (const [id, rp] of this.net.otherPlayers) {
+        if (rp.phase !== "alive") continue;
+        entries.push({ label: id.slice(0, 6), mass: rp.mass, isLocal: false });
+      }
+    }
+
+    entries.sort((a, b) => b.mass - a.mass);
+    const top5 = entries.slice(0, 5);
+
+    const lines: string[] = ["LEADERBOARD"];
+    for (let i = 0; i < top5.length; i++) {
+      const e = top5[i];
+      const name = e.isLocal ? "[YOU]" : e.label;
+      lines.push(`#${i + 1} ${name}  ${Math.floor(e.mass)}`);
+    }
+
+    this.leaderboardText.setText(lines.join("\n"));
   }
 
   shutdown() {
