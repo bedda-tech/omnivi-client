@@ -5,6 +5,8 @@ export interface RemotePlayer {
   id: string;
   x: number;
   y: number;
+  vx: number;
+  vy: number;
   mass: number;
   color: string;
   isThrusting: boolean;
@@ -90,6 +92,11 @@ export class NetworkManager {
     this.room.send("input", { x, y, vx, vy, mass, isThrusting, isEscaping });
   }
 
+  /** Notify server that we absorbed another player (victimId = their sessionId). */
+  sendAbsorbPlayer(victimId: string): void {
+    this.room?.send("absorb_player", { victimId });
+  }
+
   sendEscaped(): void {
     this.room?.send("escaped");
   }
@@ -117,6 +124,8 @@ function mapPlayer(sessionId: string, p: any): RemotePlayer {
     id: sessionId,
     x: p.x,
     y: p.y,
+    vx: p.vx ?? 0,
+    vy: p.vy ?? 0,
     mass: p.mass,
     color: p.color ?? "#ffffff",
     isThrusting: p.isThrusting ?? false,

@@ -319,6 +319,8 @@ export class Main extends Phaser.Scene {
   private net: NetworkManager | null = null;
   private sendTimer: number = 0;    // seconds since last network send
   private readonly SEND_RATE = 1 / 20; // 20 Hz
+  /** Session IDs we've already absorbed this life — prevents double-counting. */
+  private absorbedPlayers = new Set<string>();
 
   // ── Game phase / Big Shrink state ──────────────────────────────────────
   private phase!: GamePhase;
@@ -379,13 +381,14 @@ export class Main extends Phaser.Scene {
     }
 
     // ── Game state (reset on restart) ──────────────────────────────────
-    this.phase       = 'playing';
-    this.gameTimer   = 0;
-    this.shrinkTimer = 0;
-    this.bhMass      = BH_INITIAL_MASS;
-    this.escaping    = false;
-    this.escapeTimer = 0;
-    this.disruptFlash = 0;
+    this.phase          = 'playing';
+    this.gameTimer      = 0;
+    this.shrinkTimer    = 0;
+    this.bhMass         = BH_INITIAL_MASS;
+    this.escaping       = false;
+    this.escapeTimer    = 0;
+    this.disruptFlash   = 0;
+    this.absorbedPlayers.clear();
 
     // HUD elements — setScrollFactor(0) pins them to the screen
     this.massText = this.add
@@ -713,6 +716,9 @@ export class Main extends Phaser.Scene {
       if (absorbed) this.asteroids = this.asteroids.filter(a => a.active);
     }
 
+    // ── PvP: player absorbs / is absorbed by remote players ────────────
+    this.checkPvP();
+
     // ── The Big Shrink: black hole physics ─────────────────────────────
     if (this.phase === 'shrinking') {
       this.updateBlackHole(dt);
@@ -886,7 +892,49 @@ export class Main extends Phaser.Scene {
     this.phaseText.setText(reason).setColor("#ff4400");
   }
 
-  private showEndScreen(escaped: boolean) {
+  /**
+   * PvP collision check: run after local player absorbs dust/asteroids.
+   * - If local player overlaps a remote player and is ABSORB_RATIO× larger → absorb them.
+   * - If a remote player overlaps local and is ABSORB_RATIO× larger → we die.
+   */
+  private checkPvP() {
+    if (!this.net) return;
+    if (this.phase === 'escaped' || this.phase === 'consumed') return;
+
+    const px = this.player.x;
+    const py = this.player.y;
+    const pr = this.player.radius;
+    const pm = this.player.mass;
+
+    for (const [, rp] of this.net.otherPlayers) {
+      if (rp.phase !== 'alive') continue;
+      if (this.absorbedPlayers.has(rp.id)) continue;
+
+      const rr = Math.sqrt(rp.mass) * 2;
+      const dx = rp.x - px;
+      const dy = rp.y - py;
+      const touchDistSq = (pr + rr) * (pr + rr);
+      if (dx * dx + dy * dy > touchDistSq) continue;
+
+      if (pm >= rp.mass * ABSORB_RATIO) {
+        // We absorb them: momentum conservation
+        const tm = pm + rp.mass;
+        this.player.vx = (this.player.vx * pm + rp.vx * rp.mass) / tm;
+        this.player.vy = (this.player.vy * pm + rp.vy * rp.mass) / tm;
+        this.player.mass = tm;
+        this.absorbedPlayers.add(rp.id);
+        this.net.sendAbsorbPlayer(rp.id);
+      } else if (rp.mass >= pm * ABSORB_RATIO) {
+        // They absorb us: game over
+        this.phase = 'consumed';
+        const tag = rp.id.slice(0, 6).toUpperCase();
+        this.showEndScreen(false, `ABSORBED BY ${tag}`);
+        break;
+      }
+    }
+  }
+
+  private showEndScreen(escaped: boolean, deathMessage?: string) {
     const mass = Math.floor(this.player.mass);
 
     // Semi-transparent dark overlay
@@ -902,8 +950,9 @@ export class Main extends Phaser.Scene {
         .setColor("#00ffaa")
         .setVisible(true);
     } else {
+      const msg = deathMessage ?? "CONSUMED BY THE VOID";
       this.endText
-        .setText(`CONSUMED BY THE VOID\nFinal Mass: ${mass}`)
+        .setText(`${msg}\nFinal Mass: ${mass}`)
         .setColor("#ff5500")
         .setVisible(true);
     }
