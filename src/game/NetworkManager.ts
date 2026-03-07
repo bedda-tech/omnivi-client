@@ -27,6 +27,12 @@ export interface ServerGameState {
 const DEFAULT_SERVER_URL =
   (import.meta as any).env?.VITE_SERVER_URL ?? "ws://localhost:8000";
 
+export interface ClaimReadyPayload {
+  finalMass: string;   // BigInt as decimal string (wei)
+  nonce: number;
+  signature: string;
+}
+
 export class NetworkManager {
   private client: Client;
   private room: Room | null = null;
@@ -39,6 +45,7 @@ export class NetworkManager {
     bhX: 0,
     bhY: 0,
   };
+  private _onClaimReady: ((payload: ClaimReadyPayload) => void) | null = null;
 
   constructor(serverUrl: string = DEFAULT_SERVER_URL) {
     this.client = new Client(serverUrl);
@@ -74,6 +81,12 @@ export class NetworkManager {
       };
     });
 
+    // Server sends this after player escapes + SIGNER_PRIVATE_KEY is configured
+    this.room.onMessage("claim_ready", (payload: ClaimReadyPayload) => {
+      console.log("[Net] Claim ready:", payload);
+      this._onClaimReady?.(payload);
+    });
+
     console.log(`[Net] Joined room ${this.room.roomId} as ${this._mySessionId}`);
   }
 
@@ -97,8 +110,13 @@ export class NetworkManager {
     this.room?.send("absorb_player", { victimId });
   }
 
-  sendEscaped(): void {
-    this.room?.send("escaped");
+  sendEscaped(walletAddress?: string): void {
+    this.room?.send("escaped", walletAddress ? { walletAddress } : {});
+  }
+
+  /** Register a callback to receive signed claim data after escaping. */
+  onClaimReady(cb: (payload: ClaimReadyPayload) => void): void {
+    this._onClaimReady = cb;
   }
 
   sendConsumed(): void {

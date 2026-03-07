@@ -1,6 +1,7 @@
 import Phaser from "phaser";
 import { EventBus } from "../EventBus";
 import { NetworkManager } from "../NetworkManager";
+import { connectWallet } from "../blockchain/ClaimClient";
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 const WORLD_SIZE = 5000;
@@ -323,6 +324,8 @@ export class Main extends Phaser.Scene {
   private readonly SEND_RATE = 1 / 20; // 20 Hz
   /** Session IDs we've already absorbed this life — prevents double-counting. */
   private absorbedPlayers = new Set<string>();
+  /** Connected wallet address (if MetaMask available), used for on-chain claim. */
+  private walletAddress: string = "";
 
   // ── Game phase / Big Shrink state ──────────────────────────────────────
   private phase!: GamePhase;
@@ -509,11 +512,22 @@ export class Main extends Phaser.Scene {
     this.cameras.main.setZoom(1);
     this.cameras.main.centerOn(this.player.x, this.player.y);
 
+    // ── Wallet: request MetaMask accounts early (non-blocking) ───────
+    connectWallet().then((addr) => {
+      this.walletAddress = addr;
+      if (addr) console.log("[Wallet] Connected:", addr);
+    });
+
     // ── Network: connect to Colyseus server (graceful if offline) ─────
     this.net = new NetworkManager();
     this.net.connect().catch((err: unknown) => {
       console.warn("[Net] Server unavailable — playing offline:", err);
       this.net = null;
+    });
+
+    // When server sends a signed claim after escape, surface it to the React layer via DOM event
+    this.net?.onClaimReady((payload) => {
+      window.dispatchEvent(new CustomEvent("omnivi:claim_ready", { detail: payload }));
     });
 
     EventBus.emit("current-scene-ready", this);
@@ -901,7 +915,7 @@ export class Main extends Phaser.Scene {
     // Escape complete!
     if (this.escapeTimer <= 0) {
       this.phase = 'escaped';
-      this.net?.sendEscaped();
+      this.net?.sendEscaped(this.walletAddress || undefined);
       this.showEndScreen(true);
     }
   }
