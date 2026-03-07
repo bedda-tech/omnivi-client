@@ -43,6 +43,109 @@ const ESCAPE_DISRUPT_RATIO = 0.5;   // disrupted if hit by object > this × play
 
 type GamePhase = 'playing' | 'shrinking' | 'escaped' | 'consumed';
 
+// ─── Procedural Sound Effects ───────────────────────────────────────────────
+class SfxManager {
+  private ctx: AudioContext;
+  private masterGain: GainNode;
+  private thrustOsc: OscillatorNode | null = null;
+  private thrustGain: GainNode | null = null;
+
+  constructor() {
+    this.ctx = new AudioContext();
+    this.masterGain = this.ctx.createGain();
+    this.masterGain.gain.value = 0.25;
+    this.masterGain.connect(this.ctx.destination);
+  }
+
+  private tone(
+    freq: number, type: OscillatorType, duration: number,
+    volume: number, freqEnd?: number, startDelaySec: number = 0,
+  ) {
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, this.ctx.currentTime + startDelaySec);
+    if (freqEnd !== undefined) {
+      osc.frequency.linearRampToValueAtTime(freqEnd, this.ctx.currentTime + startDelaySec + duration);
+    }
+    gain.gain.setValueAtTime(volume, this.ctx.currentTime + startDelaySec);
+    gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + startDelaySec + duration);
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(this.ctx.currentTime + startDelaySec);
+    osc.stop(this.ctx.currentTime + startDelaySec + duration);
+  }
+
+  startThrust() {
+    if (this.thrustOsc) return;
+    void this.ctx.resume();
+    this.thrustOsc = this.ctx.createOscillator();
+    this.thrustGain = this.ctx.createGain();
+    this.thrustOsc.type = 'sawtooth';
+    this.thrustOsc.frequency.value = 52;
+    this.thrustGain.gain.setValueAtTime(0.001, this.ctx.currentTime);
+    this.thrustGain.gain.linearRampToValueAtTime(0.12, this.ctx.currentTime + 0.08);
+    this.thrustOsc.connect(this.thrustGain);
+    this.thrustGain.connect(this.masterGain);
+    this.thrustOsc.start();
+  }
+
+  stopThrust() {
+    if (!this.thrustOsc || !this.thrustGain) return;
+    const t = this.ctx.currentTime;
+    this.thrustGain.gain.setValueAtTime(this.thrustGain.gain.value, t);
+    this.thrustGain.gain.linearRampToValueAtTime(0.001, t + 0.12);
+    this.thrustOsc.stop(t + 0.14);
+    this.thrustOsc = null;
+    this.thrustGain = null;
+  }
+
+  absorb(mass: number) {
+    void this.ctx.resume();
+    if (mass > 50) {
+      // Asteroid/planet thump
+      this.tone(110, 'sine', 0.3, 0.35, 55);
+    } else {
+      // Dust pop — short, higher
+      this.tone(380, 'sine', 0.07, 0.2, 220);
+    }
+  }
+
+  bigShrink() {
+    void this.ctx.resume();
+    // Three low sawtooth drones for an ominous chord
+    this.tone(40,  'sawtooth', 2.5, 0.07);
+    this.tone(55,  'sawtooth', 2.5, 0.06);
+    this.tone(70,  'sawtooth', 2.0, 0.05);
+  }
+
+  escaped() {
+    void this.ctx.resume();
+    // Rising major arpeggio: C4 E4 G4 C5
+    const notes = [261, 329, 392, 523];
+    notes.forEach((hz, i) => this.tone(hz, 'sine', 0.45, 0.28, hz * 1.05, i * 0.13));
+  }
+
+  death() {
+    void this.ctx.resume();
+    // Descending sweep from 220 Hz down to 36 Hz
+    this.tone(220, 'sawtooth', 1.4, 0.35, 36);
+    this.tone(110, 'sine',     1.0, 0.15, 20);
+  }
+
+  newHighScore() {
+    void this.ctx.resume();
+    // Cheerful ascending arpeggio: C5 E5 G5 C6
+    const notes = [523, 659, 783, 1046];
+    notes.forEach((hz, i) => this.tone(hz, 'sine', 0.3, 0.22, hz, i * 0.11));
+  }
+
+  destroy() {
+    if (this.thrustOsc) { try { this.thrustOsc.stop(); } catch { /* already stopped */ } }
+    void this.ctx.close();
+  }
+}
+
 function massToRadius(mass: number): number {
   return Math.sqrt(mass) * RADIUS_SCALE;
 }
@@ -329,6 +432,11 @@ export class Main extends Phaser.Scene {
   /** Connected wallet address (if MetaMask available), used for on-chain claim. */
   private walletAddress: string = "";
 
+  // ── Sound ────────────────────────────────────────────────────────────────
+  private sfx!: SfxManager;
+  private wasThrusting: boolean = false;
+  private absorbSfxCooldown: number = 0; // seconds until next dust-absorb sound
+
   // ── Game phase / Big Shrink state ──────────────────────────────────────
   private phase!: GamePhase;
   private gameTimer!: number;       // seconds elapsed since game start
@@ -559,6 +667,12 @@ export class Main extends Phaser.Scene {
       window.dispatchEvent(new CustomEvent("omnivi:claim_ready", { detail: payload }));
     });
 
+    // Sound (create after scene is active so AudioContext has a user gesture)
+    this.sfx = new SfxManager();
+    this.events.once('shutdown', () => this.sfx.destroy());
+    this.wasThrusting = false;
+    this.absorbSfxCooldown = 0;
+
     EventBus.emit("current-scene-ready", this);
   }
 
@@ -569,7 +683,9 @@ export class Main extends Phaser.Scene {
     this.gameTimer += dt;
     if (this.phase === 'playing' && this.gameTimer >= SHRINK_START_DELAY) {
       this.phase = 'shrinking';
+      this.sfx.bigShrink();
     }
+    this.absorbSfxCooldown = Math.max(0, this.absorbSfxCooldown - dt);
 
     // ── Freeze game logic when ended; still draw and handle R key ───────
     if (this.phase === 'escaped' || this.phase === 'consumed') {
@@ -637,6 +753,11 @@ export class Main extends Phaser.Scene {
         );
       }
     }
+
+    // Thrust sound: start on press, stop on release
+    if (thrusting && !this.wasThrusting) this.sfx.startThrust();
+    else if (!thrusting && this.wasThrusting) this.sfx.stopThrust();
+    this.wasThrusting = thrusting;
 
     // ── Update player ──────────────────────────────────────────────────
     this.player.update(dt);
@@ -749,6 +870,10 @@ export class Main extends Phaser.Scene {
           this.player.mass += d.mass;
           d.active = false;
           absorbed = true;
+          if (this.absorbSfxCooldown <= 0) {
+            this.sfx.absorb(d.mass);
+            this.absorbSfxCooldown = 0.1;
+          }
         }
       }
       if (absorbed) this.dust = this.dust.filter(d => d.active);
@@ -773,6 +898,7 @@ export class Main extends Phaser.Scene {
           this.player.mass = tm;
           a.active = false;
           absorbed = true;
+          this.sfx.absorb(a.mass);
         }
       }
       if (absorbed) this.asteroids = this.asteroids.filter(a => a.active);
@@ -988,6 +1114,7 @@ export class Main extends Phaser.Scene {
         this.player.mass = tm;
         this.absorbedPlayers.add(rp.id);
         this.net.sendAbsorbPlayer(rp.id);
+        this.sfx.absorb(rp.mass);
       } else if (rp.mass >= pm * ABSORB_RATIO) {
         // They absorb us: game over
         this.phase = 'consumed';
@@ -1018,7 +1145,11 @@ export class Main extends Phaser.Scene {
     const HS_KEY = "omnivi_highscore";
     const prevBest = parseInt(localStorage.getItem(HS_KEY) ?? "0", 10);
     const isNewBest = score > prevBest;
-    if (isNewBest) localStorage.setItem(HS_KEY, String(score));
+    if (isNewBest) {
+      localStorage.setItem(HS_KEY, String(score));
+      // Delay jingle slightly so it plays after the escaped/death sound settles
+      setTimeout(() => this.sfx.newHighScore(), escaped ? 800 : 1600);
+    }
 
     // Semi-transparent dark overlay
     const gw = this.scale.width;
@@ -1029,9 +1160,11 @@ export class Main extends Phaser.Scene {
 
     if (escaped) {
       this.endText.setText("ESCAPED!").setColor("#00ffaa").setVisible(true);
+      this.sfx.escaped();
     } else {
       const msg = deathMessage ?? "CONSUMED BY THE VOID";
       this.endText.setText(msg).setColor("#ff5500").setVisible(true);
+      this.sfx.death();
     }
 
     const mins = Math.floor(timeSurvived / 60);
