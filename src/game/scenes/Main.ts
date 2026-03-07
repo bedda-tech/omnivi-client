@@ -298,7 +298,9 @@ export class Main extends Phaser.Scene {
   private massText!: Phaser.GameObjects.Text;
   private phaseText!: Phaser.GameObjects.Text;        // phase/escape status (center-top)
   private endText!: Phaser.GameObjects.Text;
+  private statsText!: Phaser.GameObjects.Text;
   private restartText!: Phaser.GameObjects.Text;
+  private menuKeyText!: Phaser.GameObjects.Text;
   private minimapGfx!: Phaser.GameObjects.Graphics;  // screen-space minimap overlay
   private leaderboardText!: Phaser.GameObjects.Text; // top-right mass ranking
 
@@ -432,7 +434,7 @@ export class Main extends Phaser.Scene {
 
     // End-screen overlay elements (hidden until game ends)
     this.endText = this.add
-      .text(512, 260, "", {
+      .text(512, 210, "", {
         fontFamily: "Arial Black",
         fontSize: "44px",
         color: "#ffffff",
@@ -445,10 +447,37 @@ export class Main extends Phaser.Scene {
       .setOrigin(0.5)
       .setVisible(false);
 
+    this.statsText = this.add
+      .text(512, 300, "", {
+        fontFamily: "monospace",
+        fontSize: "18px",
+        color: "#dddddd",
+        stroke: "#000000",
+        strokeThickness: 3,
+        align: "center",
+        lineSpacing: 6,
+      })
+      .setScrollFactor(0)
+      .setDepth(30)
+      .setOrigin(0.5)
+      .setVisible(false);
+
     this.restartText = this.add
-      .text(512, 350, "Press  R  to play again", {
+      .text(512, 405, "[ R ]  Play Again", {
         fontSize: "20px",
-        color: "#cccccc",
+        color: "#00ff88",
+        stroke: "#000000",
+        strokeThickness: 3,
+      })
+      .setScrollFactor(0)
+      .setDepth(30)
+      .setOrigin(0.5)
+      .setVisible(false);
+
+    this.menuKeyText = this.add
+      .text(512, 438, "[ M ]  Main Menu", {
+        fontSize: "20px",
+        color: "#aaaaff",
         stroke: "#000000",
         strokeThickness: 3,
       })
@@ -971,30 +1000,65 @@ export class Main extends Phaser.Scene {
 
   private showEndScreen(escaped: boolean, deathMessage?: string) {
     const mass = Math.floor(this.player.mass);
+    const timeSurvived = Math.floor(this.gameTimer);
+    const score = Math.floor(mass * (1 + this.gameTimer / 60));
+
+    // Compute rank among all players (local + alive remotes)
+    const allMasses: number[] = [this.player.mass];
+    if (this.net) {
+      for (const rp of this.net.otherPlayers.values()) {
+        if (rp.phase === "alive") allMasses.push(rp.mass);
+      }
+    }
+    allMasses.sort((a, b) => b - a);
+    const rank = allMasses.indexOf(this.player.mass) + 1;
+    const total = allMasses.length;
+
+    // High score (localStorage)
+    const HS_KEY = "omnivi_highscore";
+    const prevBest = parseInt(localStorage.getItem(HS_KEY) ?? "0", 10);
+    const isNewBest = score > prevBest;
+    if (isNewBest) localStorage.setItem(HS_KEY, String(score));
 
     // Semi-transparent dark overlay
     const gw = this.scale.width;
     const gh = this.scale.height;
     const overlay = this.add.graphics().setScrollFactor(0).setDepth(25);
-    overlay.fillStyle(0x000000, 0.55);
+    overlay.fillStyle(0x000000, 0.65);
     overlay.fillRect(0, 0, gw, gh);
 
     if (escaped) {
-      this.endText
-        .setText(`ESCAPED!\nFinal Mass: ${mass}`)
-        .setColor("#00ffaa")
-        .setVisible(true);
+      this.endText.setText("ESCAPED!").setColor("#00ffaa").setVisible(true);
     } else {
       const msg = deathMessage ?? "CONSUMED BY THE VOID";
-      this.endText
-        .setText(`${msg}\nFinal Mass: ${mass}`)
-        .setColor("#ff5500")
-        .setVisible(true);
+      this.endText.setText(msg).setColor("#ff5500").setVisible(true);
     }
+
+    const mins = Math.floor(timeSurvived / 60);
+    const secs = timeSurvived % 60;
+    const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+    const rankStr = total > 1 ? `Rank  #${rank} / ${total}` : "";
+    const bestStr = isNewBest ? "NEW HIGH SCORE!" : `Best: ${prevBest.toLocaleString()}`;
+
+    const statsLines = [
+      `Mass: ${mass.toLocaleString()}   Time: ${timeStr}   Score: ${score.toLocaleString()}`,
+      rankStr,
+      bestStr,
+    ].filter(Boolean);
+
+    this.statsText
+      .setText(statsLines.join("\n"))
+      .setColor(isNewBest ? "#ffdd00" : "#dddddd")
+      .setVisible(true);
+
     this.restartText.setVisible(true);
+    this.menuKeyText.setVisible(true);
 
     this.input.keyboard!.once("keydown-R", () => {
       this.scene.restart();
+    });
+    this.input.keyboard!.once("keydown-M", () => {
+      this.scene.start("MainMenu");
     });
   }
 
