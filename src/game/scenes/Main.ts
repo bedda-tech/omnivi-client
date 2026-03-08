@@ -1,6 +1,6 @@
 import Phaser from "phaser";
 import { EventBus } from "../EventBus";
-import { NetworkManager } from "../NetworkManager";
+import { NetworkManager, getOrCreatePlayerName } from "../NetworkManager";
 import { connectWallet } from "../blockchain/ClaimClient";
 
 // ─── Constants ─────────────────────────────────────────────────────────────
@@ -429,6 +429,8 @@ export class Main extends Phaser.Scene {
   private readonly SEND_RATE = 1 / 20; // 20 Hz
   /** Session IDs we've already absorbed this life — prevents double-counting. */
   private absorbedPlayers = new Set<string>();
+  /** World-space name labels for remote players, keyed by session ID. */
+  private nameLabels = new Map<string, Phaser.GameObjects.Text>();
   /** Connected wallet address (if MetaMask available), used for on-chain claim. */
   private walletAddress: string = "";
 
@@ -504,6 +506,8 @@ export class Main extends Phaser.Scene {
     this.escapeTimer    = 0;
     this.disruptFlash   = 0;
     this.absorbedPlayers.clear();
+    for (const lbl of this.nameLabels.values()) lbl.destroy();
+    this.nameLabels.clear();
 
     // HUD elements — setScrollFactor(0) pins them to the screen
     this.massText = this.add
@@ -657,7 +661,11 @@ export class Main extends Phaser.Scene {
 
     // ── Network: connect to Colyseus server (graceful if offline) ─────
     this.net = new NetworkManager();
-    this.net.connect().catch((err: unknown) => {
+    this.net.onPlayerRemoved((id) => {
+      this.nameLabels.get(id)?.destroy();
+      this.nameLabels.delete(id);
+    });
+    this.net.connect(getOrCreatePlayerName()).catch((err: unknown) => {
       console.warn("[Net] Server unavailable — playing offline:", err);
       this.net = null;
     });
@@ -1576,11 +1584,13 @@ export class Main extends Phaser.Scene {
     }
   }
 
-  /** Render all remote players as tinted circles with mass labels. */
+  /** Render all remote players as tinted circles with name labels. */
   private drawRemotePlayers() {
     if (!this.net) return;
-    for (const [, rp] of this.net.otherPlayers) {
+    const seen = new Set<string>();
+    for (const [id, rp] of this.net.otherPlayers) {
       if (rp.phase !== "alive") continue;
+      seen.add(id);
       const r = Math.sqrt(rp.mass) * 2; // massToRadius
       // Parse HSL color string into a hex int Phaser can use
       const color = parseHslColor(rp.color);
@@ -1607,6 +1617,26 @@ export class Main extends Phaser.Scene {
       if (rp.isEscaping) {
         this.gfx.lineStyle(3, 0x00ffaa, 0.4);
         this.gfx.strokeCircle(rp.x, rp.y, r * 1.5);
+      }
+
+      // Name label above the player circle
+      if (!this.nameLabels.has(id)) {
+        const lbl = this.add.text(0, 0, rp.name, {
+          fontSize: '13px', fontFamily: 'monospace',
+          color: '#ffffff',
+          stroke: '#000000', strokeThickness: 3,
+        }).setAlpha(0.85).setOrigin(0.5, 1).setDepth(15);
+        this.nameLabels.set(id, lbl);
+      }
+      const lbl = this.nameLabels.get(id)!;
+      lbl.setPosition(rp.x, rp.y - r - 5);
+    }
+
+    // Destroy labels for players no longer visible
+    for (const [id, lbl] of this.nameLabels) {
+      if (!seen.has(id)) {
+        lbl.destroy();
+        this.nameLabels.delete(id);
       }
     }
   }
@@ -1671,14 +1701,15 @@ export class Main extends Phaser.Scene {
 
   // ─── Leaderboard ───────────────────────────────────────────────────────────
   private drawLeaderboard() {
+    const myName = getOrCreatePlayerName();
     type Entry = { label: string; mass: number; isLocal: boolean };
     const entries: Entry[] = [
-      { label: "YOU", mass: this.player.mass, isLocal: true },
+      { label: myName, mass: this.player.mass, isLocal: true },
     ];
     if (this.net) {
-      for (const [id, rp] of this.net.otherPlayers) {
+      for (const [, rp] of this.net.otherPlayers) {
         if (rp.phase !== "alive") continue;
-        entries.push({ label: id.slice(0, 6), mass: rp.mass, isLocal: false });
+        entries.push({ label: rp.name, mass: rp.mass, isLocal: false });
       }
     }
 
@@ -1688,14 +1719,16 @@ export class Main extends Phaser.Scene {
     const lines: string[] = ["LEADERBOARD"];
     for (let i = 0; i < top5.length; i++) {
       const e = top5[i];
-      const name = e.isLocal ? "[YOU]" : e.label;
-      lines.push(`#${i + 1} ${name}  ${Math.floor(e.mass)}`);
+      const tag = e.isLocal ? `[${e.label}]` : e.label;
+      lines.push(`#${i + 1} ${tag}  ${Math.floor(e.mass)}`);
     }
 
     this.leaderboardText.setText(lines.join("\n"));
   }
 
   shutdown() {
+    for (const lbl of this.nameLabels.values()) lbl.destroy();
+    this.nameLabels.clear();
     this.net?.disconnect();
     this.net = null;
   }

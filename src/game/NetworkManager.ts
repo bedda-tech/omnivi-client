@@ -1,8 +1,24 @@
 import { Client, Room } from "colyseus.js";
 
+// ─── Player name generation ────────────────────────────────────────────────────
+const ADJECTIVES = ["Stellar","Cosmic","Nebula","Solar","Void","Dark","Swift","Silent","Rogue","Quantum"];
+const NOUNS      = ["Drifter","Hunter","Nomad","Ranger","Pilot","Seeker","Wanderer","Scout","Voyager","Exile"];
+const NAME_KEY   = "omnivi_playername";
+
+export function getOrCreatePlayerName(): string {
+  const stored = localStorage.getItem(NAME_KEY);
+  if (stored) return stored;
+  const adj  = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
+  const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)];
+  const name = adj + noun;
+  localStorage.setItem(NAME_KEY, name);
+  return name;
+}
+
 // ─── Remote player snapshot (what the server tells us about other players) ───
 export interface RemotePlayer {
   id: string;
+  name: string;
   x: number;
   y: number;
   vx: number;
@@ -46,20 +62,24 @@ export class NetworkManager {
     bhY: 0,
   };
   private _onClaimReady: ((payload: ClaimReadyPayload) => void) | null = null;
+  private _onPlayerAdded: ((id: string, rp: RemotePlayer) => void) | null = null;
+  private _onPlayerRemoved: ((id: string) => void) | null = null;
 
   constructor(serverUrl: string = DEFAULT_SERVER_URL) {
     this.client = new Client(serverUrl);
   }
 
   /** Join (or create) the shared "omnivi" room. Non-throwing — failures are logged. */
-  async connect(): Promise<void> {
-    this.room = await this.client.joinOrCreate<any>("omnivi");
+  async connect(name: string = "Pilot"): Promise<void> {
+    this.room = await this.client.joinOrCreate<any>("omnivi", { name });
     this._mySessionId = this.room.sessionId;
 
     // Track remote players (skip our own entry)
     this.room.state.players.onAdd((player: any, sessionId: string) => {
       if (sessionId === this._mySessionId) return;
-      this._players.set(sessionId, mapPlayer(sessionId, player));
+      const rp = mapPlayer(sessionId, player);
+      this._players.set(sessionId, rp);
+      this._onPlayerAdded?.(sessionId, rp);
       player.onChange(() => {
         this._players.set(sessionId, mapPlayer(sessionId, player));
       });
@@ -67,6 +87,7 @@ export class NetworkManager {
 
     this.room.state.players.onRemove((_player: any, sessionId: string) => {
       this._players.delete(sessionId);
+      this._onPlayerRemoved?.(sessionId);
     });
 
     // Mirror server game state (phase, timers, BH)
@@ -119,6 +140,14 @@ export class NetworkManager {
     this._onClaimReady = cb;
   }
 
+  onPlayerAdded(cb: (id: string, rp: RemotePlayer) => void): void {
+    this._onPlayerAdded = cb;
+  }
+
+  onPlayerRemoved(cb: (id: string) => void): void {
+    this._onPlayerRemoved = cb;
+  }
+
   sendConsumed(): void {
     this.room?.send("consumed");
   }
@@ -140,6 +169,7 @@ export class NetworkManager {
 function mapPlayer(sessionId: string, p: any): RemotePlayer {
   return {
     id: sessionId,
+    name: p.name ?? "Pilot",
     x: p.x,
     y: p.y,
     vx: p.vx ?? 0,
