@@ -431,6 +431,8 @@ export class Main extends Phaser.Scene {
   private absorbedPlayers = new Set<string>();
   /** World-space name labels for remote players, keyed by session ID. */
   private nameLabels = new Map<string, Phaser.GameObjects.Text>();
+  /** Interpolated render positions for remote players (dead reckoning). */
+  private remoteRender = new Map<string, { renderX: number; renderY: number }>();
   /** Connected wallet address (if MetaMask available), used for on-chain claim. */
   private walletAddress: string = "";
 
@@ -508,6 +510,7 @@ export class Main extends Phaser.Scene {
     this.absorbedPlayers.clear();
     for (const lbl of this.nameLabels.values()) lbl.destroy();
     this.nameLabels.clear();
+    this.remoteRender.clear();
 
     // HUD elements — setScrollFactor(0) pins them to the screen
     this.massText = this.add
@@ -698,7 +701,7 @@ export class Main extends Phaser.Scene {
     // ── Freeze game logic when ended; still draw and handle R key ───────
     if (this.phase === 'escaped' || this.phase === 'consumed') {
       this.drawVignette();
-      this.drawScene();
+      this.drawScene(dt);
       return;
     }
 
@@ -907,6 +910,9 @@ export class Main extends Phaser.Scene {
           a.active = false;
           absorbed = true;
           this.sfx.absorb(a.mass);
+          // Screen shake proportional to asteroid mass
+          const shakeMag = Math.min(0.004 + a.mass / 50000, 0.012);
+          this.cameras.main.shake(220, shakeMag);
         }
       }
       if (absorbed) this.asteroids = this.asteroids.filter(a => a.active);
@@ -960,7 +966,7 @@ export class Main extends Phaser.Scene {
 
     // ── Render ──────────────────────────────────────────────────────────
     this.drawVignette();
-    this.drawScene();
+    this.drawScene(dt);
     this.drawMinimap();
     this.drawLeaderboard();
   }
@@ -1123,6 +1129,7 @@ export class Main extends Phaser.Scene {
         this.absorbedPlayers.add(rp.id);
         this.net.sendAbsorbPlayer(rp.id);
         this.sfx.absorb(rp.mass);
+        this.cameras.main.shake(350, 0.015); // big shake for eating a player
       } else if (rp.mass >= pm * ABSORB_RATIO) {
         // They absorb us: game over
         this.phase = 'consumed';
@@ -1375,7 +1382,7 @@ export class Main extends Phaser.Scene {
 
   // ─── Rendering ─────────────────────────────────────────────────────────────
 
-  private drawScene() {
+  private drawScene(dt: number = 0) {
     this.gfx.clear();
 
     // Draw black hole first (underneath everything)
@@ -1384,7 +1391,7 @@ export class Main extends Phaser.Scene {
     }
 
     // ── Draw remote players (ghost players behind local) ─────────────────
-    this.drawRemotePlayers();
+    this.drawRemotePlayers(dt);
 
     // ── Draw dust — color shifts from blue (tiny) to orange (medium) ────
     for (const d of this.dust) {
@@ -1585,38 +1592,59 @@ export class Main extends Phaser.Scene {
   }
 
   /** Render all remote players as tinted circles with name labels. */
-  private drawRemotePlayers() {
+  private drawRemotePlayers(dt: number = 0) {
     if (!this.net) return;
+    // Dead-reckoning interpolation: lerp render positions toward
+    // server pos + velocity * estimated network lag (50ms) each frame.
+    // This hides the 20 Hz server tick rate with smooth motion.
+    const TICK_LAG   = 0.05;  // assume ~50ms from when server sampled to when we apply it
+    const INTERP_SPD = 14;    // lerp rate — converges in ~1/14 s ≈ 70ms
+
     const seen = new Set<string>();
     for (const [id, rp] of this.net.otherPlayers) {
       if (rp.phase !== "alive") continue;
       seen.add(id);
+
+      // ── Interpolation ─────────────────────────────────────────────────
+      const deadX = rp.x + rp.vx * TICK_LAG;
+      const deadY = rp.y + rp.vy * TICK_LAG;
+      if (!this.remoteRender.has(id)) {
+        // First time we see this player: snap to position, no lerp
+        this.remoteRender.set(id, { renderX: deadX, renderY: deadY });
+      }
+      const rr = this.remoteRender.get(id)!;
+      const alpha = Math.min(dt * INTERP_SPD, 1);
+      rr.renderX += (deadX - rr.renderX) * alpha;
+      rr.renderY += (deadY - rr.renderY) * alpha;
+      const rx = rr.renderX;
+      const ry = rr.renderY;
+
+      // ── Draw ──────────────────────────────────────────────────────────
       const r = Math.sqrt(rp.mass) * 2; // massToRadius
-      // Parse HSL color string into a hex int Phaser can use
       const color = parseHslColor(rp.color);
 
       // Subtle glow
       this.gfx.fillStyle(color, 0.08);
-      this.gfx.fillCircle(rp.x, rp.y, r * 2.0);
+      this.gfx.fillCircle(rx, ry, r * 2.0);
 
       // Body
       this.gfx.fillStyle(color, 0.75);
-      this.gfx.fillCircle(rp.x, rp.y, r);
+      this.gfx.fillCircle(rx, ry, r);
 
       // Outline
       this.gfx.lineStyle(Math.max(1, r * 0.04), 0xffffff, 0.5);
-      this.gfx.strokeCircle(rp.x, rp.y, r);
+      this.gfx.strokeCircle(rx, ry, r);
 
       // Thrust flash
       if (rp.isThrusting) {
         this.gfx.fillStyle(0xff6600, 0.35);
-        this.gfx.fillCircle(rp.x, rp.y, r * 0.4);
+        this.gfx.fillCircle(rx, ry, r * 0.4);
       }
 
       // Escape aura
       if (rp.isEscaping) {
         this.gfx.lineStyle(3, 0x00ffaa, 0.4);
-        this.gfx.strokeCircle(rp.x, rp.y, r * 1.5);
+        this.gfx.strokeCircle(rx, ry, r * 1.5);
       }
 
       // Name label above the player circle
@@ -1629,15 +1657,18 @@ export class Main extends Phaser.Scene {
         this.nameLabels.set(id, lbl);
       }
       const lbl = this.nameLabels.get(id)!;
-      lbl.setPosition(rp.x, rp.y - r - 5);
+      lbl.setPosition(rx, ry - r - 5);
     }
 
-    // Destroy labels for players no longer visible
+    // Destroy labels + render state for players no longer visible
     for (const [id, lbl] of this.nameLabels) {
       if (!seen.has(id)) {
         lbl.destroy();
         this.nameLabels.delete(id);
       }
+    }
+    for (const id of this.remoteRender.keys()) {
+      if (!seen.has(id)) this.remoteRender.delete(id);
     }
   }
 
