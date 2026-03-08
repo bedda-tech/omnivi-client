@@ -41,6 +41,14 @@ const ESCAPE_DURATION      = 12;    // seconds to complete escape
 const ESCAPE_MIN_DIST      = 1600;  // must be this far from world center (px)
 const ESCAPE_DISRUPT_RATIO = 0.5;   // disrupted if hit by object > this × player mass
 
+// ─── AI Bots ────────────────────────────────────────────────────────────────
+const BOT_COUNT       = 4;
+const BOT_NAMES       = ["TITAN", "VEGA", "NOVA", "AXIOM"];
+const BOT_COLORS      = [0xff5555, 0x55ff99, 0xffbb33, 0xbb66ff];
+const BOT_THRUST      = 220;        // slightly weaker than player
+const BOT_MAX_SPEED   = 420;
+const BOT_DETECT_RANGE = 700;       // px — how far bots look for targets
+
 type GamePhase = 'playing' | 'shrinking' | 'escaped' | 'consumed';
 
 // ─── Procedural Sound Effects ───────────────────────────────────────────────
@@ -386,11 +394,132 @@ class Player {
   }
 }
 
+// ─── Bot Player ─────────────────────────────────────────────────────────────
+class BotPlayer {
+  x: number;
+  y: number;
+  vx: number = 0;
+  vy: number = 0;
+  mass: number;
+  rotation: number = 0;
+  color: number;
+  name: string;
+  active: boolean = true;
+  thrustingThisFrame: boolean = false;
+
+  private wanderTarget: { x: number; y: number } | null = null;
+  private wanderCooldown: number = 0;
+
+  constructor(x: number, y: number, mass: number, color: number, name: string) {
+    this.x = x;
+    this.y = y;
+    this.mass = mass;
+    this.color = color;
+    this.name = name;
+    this.rotation = Math.random() * Math.PI * 2;
+  }
+
+  get radius(): number {
+    return massToRadius(this.mass);
+  }
+
+  /**
+   * AI brain: choose a rotation target and set thrustingThisFrame.
+   * Physics (velocity, position, drag) are updated after decision.
+   */
+  updateAI(dt: number, player: Player, dust: DustParticle[]) {
+    this.thrustingThisFrame = false;
+
+    const playerDist = Math.hypot(player.x - this.x, player.y - this.y);
+
+    // ── 1. FLEE from player if they're big enough to eat us ──────────────
+    if (player.mass >= this.mass * ABSORB_RATIO && playerDist < BOT_DETECT_RANGE) {
+      this.rotation = Math.atan2(this.y - player.y, this.x - player.x);
+      this.thrustingThisFrame = true;
+      return;
+    }
+
+    // ── 2. HUNT player if we're big enough to eat them ───────────────────
+    if (this.mass >= player.mass * ABSORB_RATIO && playerDist < BOT_DETECT_RANGE) {
+      this.rotation = Math.atan2(player.y - this.y, player.x - this.x);
+      this.thrustingThisFrame = true;
+      return;
+    }
+
+    // ── 3. CHASE nearest dust ─────────────────────────────────────────────
+    let nearestDust: DustParticle | null = null;
+    let nearestDustDistSq = (BOT_DETECT_RANGE * 0.7) ** 2;
+    for (const d of dust) {
+      if (!d.active) continue;
+      const dSq = (d.x - this.x) ** 2 + (d.y - this.y) ** 2;
+      if (dSq < nearestDustDistSq) {
+        nearestDustDistSq = dSq;
+        nearestDust = d;
+      }
+    }
+    if (nearestDust) {
+      this.rotation = Math.atan2(nearestDust.y - this.y, nearestDust.x - this.x);
+      this.thrustingThisFrame = true;
+      return;
+    }
+
+    // ── 4. WANDER ─────────────────────────────────────────────────────────
+    this.wanderCooldown -= dt;
+    if (this.wanderCooldown <= 0 || !this.wanderTarget) {
+      const angle = Math.random() * Math.PI * 2;
+      const dist  = 400 + Math.random() * 800;
+      this.wanderTarget = {
+        x: Math.max(200, Math.min(WORLD_SIZE - 200, this.x + Math.cos(angle) * dist)),
+        y: Math.max(200, Math.min(WORLD_SIZE - 200, this.y + Math.sin(angle) * dist)),
+      };
+      this.wanderCooldown = 3 + Math.random() * 5;
+    }
+    const tdx = this.wanderTarget.x - this.x;
+    const tdy = this.wanderTarget.y - this.y;
+    if (Math.hypot(tdx, tdy) > 60) {
+      this.rotation = Math.atan2(tdy, tdx);
+      this.thrustingThisFrame = true;
+    } else {
+      this.wanderTarget = null;
+    }
+  }
+
+  /** Apply thrust + drag + position update after AI decision. */
+  updatePhysics(dt: number) {
+    if (this.thrustingThisFrame && this.mass > 15) {
+      const cos = Math.cos(this.rotation);
+      const sin = Math.sin(this.rotation);
+      this.vx += cos * BOT_THRUST * dt;
+      this.vy += sin * BOT_THRUST * dt;
+      const speed = Math.hypot(this.vx, this.vy);
+      if (speed > BOT_MAX_SPEED) {
+        this.vx = (this.vx / speed) * BOT_MAX_SPEED;
+        this.vy = (this.vy / speed) * BOT_MAX_SPEED;
+      }
+      this.mass = Math.max(15, this.mass - THRUST_MASS_COST);
+    }
+    const dragFactor = Math.pow(DRAG, dt * 60);
+    this.vx *= dragFactor;
+    this.vy *= dragFactor;
+    this.x += this.vx * dt;
+    this.y += this.vy * dt;
+    // Boundary bounce
+    const r = this.radius;
+    if (this.x < r) { this.x = r; this.vx =  Math.abs(this.vx) * 0.5; }
+    if (this.x > WORLD_SIZE - r) { this.x = WORLD_SIZE - r; this.vx = -Math.abs(this.vx) * 0.5; }
+    if (this.y < r) { this.y = r; this.vy =  Math.abs(this.vy) * 0.5; }
+    if (this.y > WORLD_SIZE - r) { this.y = WORLD_SIZE - r; this.vy = -Math.abs(this.vy) * 0.5; }
+  }
+}
+
 // ─── Main Scene ────────────────────────────────────────────────────────────
 export class Main extends Phaser.Scene {
   private player!: Player;
   private dust: DustParticle[] = [];
   private asteroids: Asteroid[] = [];
+  private bots: BotPlayer[] = [];
+  /** World-space name labels for bots, keyed by bot name. */
+  private botNameLabels = new Map<string, Phaser.GameObjects.Text>();
 
   // Rendering
   private gfx!: Phaser.GameObjects.Graphics;
@@ -511,6 +640,19 @@ export class Main extends Phaser.Scene {
     for (const lbl of this.nameLabels.values()) lbl.destroy();
     this.nameLabels.clear();
     this.remoteRender.clear();
+    for (const lbl of this.botNameLabels.values()) lbl.destroy();
+    this.botNameLabels.clear();
+
+    // Spawn bots spread around the world, away from the player start
+    this.bots = [];
+    for (let i = 0; i < BOT_COUNT; i++) {
+      const angle = (i / BOT_COUNT) * Math.PI * 2 + Math.random() * 0.8;
+      const dist  = 1000 + Math.random() * 1200;
+      const bx    = WORLD_SIZE / 2 + Math.cos(angle) * dist;
+      const by    = WORLD_SIZE / 2 + Math.sin(angle) * dist;
+      const bmass = 200 + Math.random() * 600; // 200–800 (smaller than player's 1000)
+      this.bots.push(new BotPlayer(bx, by, bmass, BOT_COLORS[i], BOT_NAMES[i]));
+    }
 
     // HUD elements — setScrollFactor(0) pins them to the screen
     this.massText = this.add
@@ -921,6 +1063,9 @@ export class Main extends Phaser.Scene {
     // ── PvP: player absorbs / is absorbed by remote players ────────────
     this.checkPvP();
 
+    // ── Bots: AI, physics, dust absorption, PvP ────────────────────────
+    this.updateBots(dt);
+
     // ── The Big Shrink: black hole physics ─────────────────────────────
     if (this.phase === 'shrinking') {
       this.updateBlackHole(dt);
@@ -1140,17 +1285,97 @@ export class Main extends Phaser.Scene {
     }
   }
 
+  // ─── Bot Update ────────────────────────────────────────────────────────────
+  private updateBots(dt: number) {
+    if (this.phase === 'escaped' || this.phase === 'consumed') return;
+
+    for (const bot of this.bots) {
+      if (!bot.active) continue;
+
+      bot.updateAI(dt, this.player, this.dust);
+      bot.updatePhysics(dt);
+
+      // BH gravity + consumption during shrink phase
+      if (this.phase === 'shrinking') {
+        const bx  = WORLD_SIZE / 2;
+        const by  = WORLD_SIZE / 2;
+        const bhR = massToRadius(this.bhMass);
+        const bhG = GRAVITY_G * BH_GRAVITY_MULT;
+        const dx  = bx - bot.x;
+        const dy  = by - bot.y;
+        const dSq = Math.max(dx * dx + dy * dy, GRAVITY_MIN_DIST_SQ);
+        const dist = Math.sqrt(dSq);
+        let ax = bhG * this.bhMass / dSq * dx / dist;
+        let ay = bhG * this.bhMass / dSq * dy / dist;
+        const mag = Math.hypot(ax, ay);
+        if (mag > MAX_G_ACCEL) { ax = ax / mag * MAX_G_ACCEL; ay = ay / mag * MAX_G_ACCEL; }
+        bot.vx += ax * dt;
+        bot.vy += ay * dt;
+        if (dist < bhR + bot.radius) { bot.active = false; continue; }
+      }
+
+      // Bot absorbs dust (momentum-conserving)
+      let dustAbsorbed = false;
+      for (const d of this.dust) {
+        if (!d.active) continue;
+        if (bot.mass < d.mass * ABSORB_RATIO) continue;
+        const dx = d.x - bot.x;
+        const dy = d.y - bot.y;
+        if (dx * dx + dy * dy < (bot.radius + d.radius) ** 2) {
+          const tm = bot.mass + d.mass;
+          bot.vx = (bot.vx * bot.mass + d.vx * d.mass) / tm;
+          bot.vy = (bot.vy * bot.mass + d.vy * d.mass) / tm;
+          bot.mass = tm;
+          d.active = false;
+          dustAbsorbed = true;
+        }
+      }
+      if (dustAbsorbed) this.dust = this.dust.filter(d => d.active);
+
+      // Bot absorbs player
+      if (bot.mass >= this.player.mass * ABSORB_RATIO) {
+        const dx = bot.x - this.player.x;
+        const dy = bot.y - this.player.y;
+        if (dx * dx + dy * dy < (bot.radius + this.player.radius) ** 2) {
+          this.phase = 'consumed';
+          this.showEndScreen(false, `ABSORBED BY ${bot.name}`);
+          return;
+        }
+      }
+
+      // Player absorbs bot
+      if (this.player.mass >= bot.mass * ABSORB_RATIO) {
+        const dx = bot.x - this.player.x;
+        const dy = bot.y - this.player.y;
+        if (dx * dx + dy * dy < (this.player.radius + bot.radius) ** 2) {
+          const tm = this.player.mass + bot.mass;
+          this.player.vx = (this.player.vx * this.player.mass + bot.vx * bot.mass) / tm;
+          this.player.vy = (this.player.vy * this.player.mass + bot.vy * bot.mass) / tm;
+          this.player.mass = tm;
+          bot.active = false;
+          this.sfx.absorb(bot.mass);
+          this.cameras.main.shake(350, 0.015);
+        }
+      }
+    }
+
+    this.bots = this.bots.filter(b => b.active);
+  }
+
   private showEndScreen(escaped: boolean, deathMessage?: string) {
     const mass = Math.floor(this.player.mass);
     const timeSurvived = Math.floor(this.gameTimer);
     const score = Math.floor(mass * (1 + this.gameTimer / 60));
 
-    // Compute rank among all players (local + alive remotes)
+    // Compute rank among all players (local + alive remotes + alive bots)
     const allMasses: number[] = [this.player.mass];
     if (this.net) {
       for (const rp of this.net.otherPlayers.values()) {
         if (rp.phase === "alive") allMasses.push(rp.mass);
       }
+    }
+    for (const bot of this.bots) {
+      if (bot.active) allMasses.push(bot.mass);
     }
     allMasses.sort((a, b) => b - a);
     const rank = allMasses.indexOf(this.player.mass) + 1;
@@ -1393,6 +1618,9 @@ export class Main extends Phaser.Scene {
     // ── Draw remote players (ghost players behind local) ─────────────────
     this.drawRemotePlayers(dt);
 
+    // ── Draw bot players ─────────────────────────────────────────────────
+    this.drawBots();
+
     // ── Draw dust — color shifts from blue (tiny) to orange (medium) ────
     for (const d of this.dust) {
       const r = Math.max(1.5, d.radius);
@@ -1591,6 +1819,63 @@ export class Main extends Phaser.Scene {
     }
   }
 
+  /** Render AI bots as colored circles with direction indicators and name labels. */
+  private drawBots() {
+    const seen = new Set<string>();
+
+    for (const bot of this.bots) {
+      if (!bot.active) continue;
+      seen.add(bot.name);
+      const r = bot.radius;
+
+      // Subtle glow
+      this.gfx.fillStyle(bot.color, 0.07);
+      this.gfx.fillCircle(bot.x, bot.y, r * 2.0);
+
+      // Body
+      this.gfx.fillStyle(bot.color, 0.8);
+      this.gfx.fillCircle(bot.x, bot.y, r);
+
+      // Outline
+      this.gfx.lineStyle(Math.max(1, r * 0.04), 0xffffff, 0.4);
+      this.gfx.strokeCircle(bot.x, bot.y, r);
+
+      // Direction indicator
+      const cos = Math.cos(bot.rotation);
+      const sin = Math.sin(bot.rotation);
+      this.gfx.lineStyle(Math.max(1.5, r * 0.06), 0xffffff, 0.7);
+      this.gfx.lineBetween(bot.x + cos * r * 0.3, bot.y + sin * r * 0.3, bot.x + cos * (r + 10), bot.y + sin * (r + 10));
+
+      // Thrust flame
+      if (bot.thrustingThisFrame) {
+        const flameX = bot.x - cos * r;
+        const flameY = bot.y - sin * r;
+        this.gfx.fillStyle(0xff4400, 0.3);
+        this.gfx.fillCircle(flameX, flameY, r * 0.55);
+        this.gfx.fillStyle(0xffee00, 0.7);
+        this.gfx.fillCircle(flameX, flameY, r * 0.25);
+      }
+
+      // Name label (world-space, above bot circle)
+      if (!this.botNameLabels.has(bot.name)) {
+        const lbl = this.add.text(0, 0, bot.name, {
+          fontSize: '13px', fontFamily: 'monospace',
+          color: '#ffffff', stroke: '#000000', strokeThickness: 3,
+        }).setAlpha(0.85).setOrigin(0.5, 1).setDepth(15);
+        this.botNameLabels.set(bot.name, lbl);
+      }
+      this.botNameLabels.get(bot.name)!.setPosition(bot.x, bot.y - r - 5);
+    }
+
+    // Destroy labels for inactive bots
+    for (const [name, lbl] of this.botNameLabels) {
+      if (!seen.has(name)) {
+        lbl.destroy();
+        this.botNameLabels.delete(name);
+      }
+    }
+  }
+
   /** Render all remote players as tinted circles with name labels. */
   private drawRemotePlayers(dt: number = 0) {
     if (!this.net) return;
@@ -1720,6 +2005,13 @@ export class Main extends Phaser.Scene {
       }
     }
 
+    // Bot players — colored dots
+    for (const bot of this.bots) {
+      if (!bot.active) continue;
+      this.minimapGfx.fillStyle(bot.color, 0.9);
+      this.minimapGfx.fillCircle(wx(bot.x), wy(bot.y), 2.5);
+    }
+
     // Local player — bright white with cyan ring to distinguish
     this.minimapGfx.fillStyle(0xffffff, 1);
     this.minimapGfx.fillCircle(wx(this.player.x), wy(this.player.y), 3);
@@ -1743,6 +2035,9 @@ export class Main extends Phaser.Scene {
         entries.push({ label: rp.name, mass: rp.mass, isLocal: false });
       }
     }
+    for (const bot of this.bots) {
+      if (bot.active) entries.push({ label: bot.name, mass: bot.mass, isLocal: false });
+    }
 
     entries.sort((a, b) => b.mass - a.mass);
     const top5 = entries.slice(0, 5);
@@ -1760,6 +2055,8 @@ export class Main extends Phaser.Scene {
   shutdown() {
     for (const lbl of this.nameLabels.values()) lbl.destroy();
     this.nameLabels.clear();
+    for (const lbl of this.botNameLabels.values()) lbl.destroy();
+    this.botNameLabels.clear();
     this.net?.disconnect();
     this.net = null;
   }
