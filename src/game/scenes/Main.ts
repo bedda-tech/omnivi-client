@@ -41,6 +41,9 @@ const ESCAPE_DURATION      = 12;    // seconds to complete escape
 const ESCAPE_MIN_DIST      = 1600;  // must be this far from world center (px)
 const ESCAPE_DISRUPT_RATIO = 0.5;   // disrupted if hit by object > this × player mass
 
+// ─── Spawn Protection ───────────────────────────────────────────────────────
+const SPAWN_PROTECT_SECS = 5; // seconds of invulnerability after spawning
+
 // ─── AI Bots ────────────────────────────────────────────────────────────────
 const BOT_COUNT       = 4;
 const BOT_NAMES       = ["TITAN", "VEGA", "NOVA", "AXIOM"];
@@ -578,6 +581,7 @@ export class Main extends Phaser.Scene {
   private escaping!: boolean;       // player is in escape countdown
   private escapeTimer!: number;     // seconds remaining in escape countdown
   private disruptFlash!: number;    // seconds remaining for disruption red flash
+  private spawnProtectTimer!: number; // seconds of invulnerability remaining
 
   constructor() {
     super("Main");
@@ -635,7 +639,8 @@ export class Main extends Phaser.Scene {
     this.bhMass         = BH_INITIAL_MASS;
     this.escaping       = false;
     this.escapeTimer    = 0;
-    this.disruptFlash   = 0;
+    this.disruptFlash        = 0;
+    this.spawnProtectTimer   = SPAWN_PROTECT_SECS;
     this.absorbedPlayers.clear();
     for (const lbl of this.nameLabels.values()) lbl.destroy();
     this.nameLabels.clear();
@@ -839,6 +844,7 @@ export class Main extends Phaser.Scene {
       this.sfx.bigShrink();
     }
     this.absorbSfxCooldown = Math.max(0, this.absorbSfxCooldown - dt);
+    if (this.spawnProtectTimer > 0) this.spawnProtectTimer = Math.max(0, this.spawnProtectTimer - dt);
 
     // ── Freeze game logic when ended; still draw and handle R key ───────
     if (this.phase === 'escaped' || this.phase === 'consumed') {
@@ -1096,16 +1102,18 @@ export class Main extends Phaser.Scene {
     const speed = Math.hypot(this.player.vx, this.player.vy);
     const planetCount = this.asteroids.filter(a => a.mass >= PLANET_THRESHOLD).length;
     const asteroidCount = this.asteroids.length - planetCount;
-    this.massText.setText(
-      [
-        `Mass:     ${Math.floor(this.player.mass)}`,
-        `Radius:   ${this.player.radius.toFixed(1)} px`,
-        `Speed:    ${speed.toFixed(0)} px/s`,
-        `Dust:     ${this.dust.length}`,
-        `Asteroids:${asteroidCount}  Planets: ${planetCount}`,
-        `Pos:      (${Math.floor(this.player.x)}, ${Math.floor(this.player.y)})`,
-      ].join("\n")
-    );
+    const hudLines = [
+      `Mass:     ${Math.floor(this.player.mass)}`,
+      `Radius:   ${this.player.radius.toFixed(1)} px`,
+      `Speed:    ${speed.toFixed(0)} px/s`,
+      `Dust:     ${this.dust.length}`,
+      `Asteroids:${asteroidCount}  Planets: ${planetCount}`,
+      `Pos:      (${Math.floor(this.player.x)}, ${Math.floor(this.player.y)})`,
+    ];
+    if (this.spawnProtectTimer > 0) {
+      hudLines.push(`SHIELD:   ${this.spawnProtectTimer.toFixed(1)}s`);
+    }
+    this.massText.setText(hudLines.join("\n"));
 
     this.updatePhaseHUD();
 
@@ -1275,8 +1283,8 @@ export class Main extends Phaser.Scene {
         this.net.sendAbsorbPlayer(rp.id);
         this.sfx.absorb(rp.mass);
         this.cameras.main.shake(350, 0.015); // big shake for eating a player
-      } else if (rp.mass >= pm * ABSORB_RATIO) {
-        // They absorb us: game over
+      } else if (rp.mass >= pm * ABSORB_RATIO && this.spawnProtectTimer <= 0) {
+        // They absorb us: game over (blocked during spawn protection)
         this.phase = 'consumed';
         const tag = rp.id.slice(0, 6).toUpperCase();
         this.showEndScreen(false, `ABSORBED BY ${tag}`);
@@ -1332,8 +1340,8 @@ export class Main extends Phaser.Scene {
       }
       if (dustAbsorbed) this.dust = this.dust.filter(d => d.active);
 
-      // Bot absorbs player
-      if (bot.mass >= this.player.mass * ABSORB_RATIO) {
+      // Bot absorbs player (blocked during spawn protection)
+      if (bot.mass >= this.player.mass * ABSORB_RATIO && this.spawnProtectTimer <= 0) {
         const dx = bot.x - this.player.x;
         const dy = bot.y - this.player.y;
         if (dx * dx + dy * dy < (bot.radius + this.player.radius) ** 2) {
@@ -1657,6 +1665,23 @@ export class Main extends Phaser.Scene {
       this.gfx.fillCircle(flameX, flameY, radius * 0.55);
       this.gfx.fillStyle(0xffee00, 0.8);
       this.gfx.fillCircle(flameX, flameY, radius * 0.25);
+    }
+
+    // ── Spawn protection ring ────────────────────────────────────────────
+    if (this.spawnProtectTimer > 0) {
+      const t_prot = this.time.now / 1000;
+      const fade   = this.spawnProtectTimer / SPAWN_PROTECT_SECS;    // 1→0
+      const pulse  = 0.45 + 0.35 * Math.sin(t_prot * 6);
+      const alpha  = fade * pulse;
+      // Outer glow fill
+      this.gfx.fillStyle(0x00ffff, alpha * 0.12);
+      this.gfx.fillCircle(x, y, radius * 1.7);
+      // Crisp ring
+      this.gfx.lineStyle(Math.max(1.5, radius * 0.05), 0x00ffff, alpha);
+      this.gfx.strokeCircle(x, y, radius * 1.4);
+      // Inner ring (dimmer, slightly smaller)
+      this.gfx.lineStyle(Math.max(1, radius * 0.03), 0x88ffff, alpha * 0.6);
+      this.gfx.strokeCircle(x, y, radius * 1.2);
     }
 
     // ── Gravity well glow ────────────────────────────────────────────────
