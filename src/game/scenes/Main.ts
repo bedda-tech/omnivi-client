@@ -151,6 +151,20 @@ class SfxManager {
     notes.forEach((hz, i) => this.tone(hz, 'sine', 0.3, 0.22, hz, i * 0.11));
   }
 
+  /** Deep bass rumble near black hole. intensity 0..1 */
+  bhRumble(intensity: number) {
+    void this.ctx.resume();
+    this.tone(25 + intensity * 12, 'sine',     0.5, intensity * 0.14, 18);
+    this.tone(38 + intensity * 8,  'sawtooth', 0.4, intensity * 0.06, 28);
+  }
+
+  /** Two-pulse heartbeat when low on mass. */
+  heartbeat() {
+    void this.ctx.resume();
+    this.tone(58, 'sine', 0.12, 0.20, 38);
+    this.tone(48, 'sine', 0.10, 0.15, 32, 0.16);
+  }
+
   destroy() {
     if (this.thrustOsc) { try { this.thrustOsc.stop(); } catch { /* already stopped */ } }
     void this.ctx.close();
@@ -172,6 +186,11 @@ function parseHslColor(hsl: string): number {
     parseInt(m[3]) / 100,
   ).color;
 }
+
+// ─── Juice types ───────────────────────────────────────────────────────────
+interface BurstParticle { x: number; y: number; vx: number; vy: number; life: number; maxLife: number; color: number; r: number; }
+interface TrailPoint    { x: number; y: number; life: number; maxLife: number; }
+interface FloatLabel    { text: Phaser.GameObjects.Text; vy: number; life: number; maxLife: number; }
 
 // ─── Dust ──────────────────────────────────────────────────────────────────
 class DustParticle {
@@ -573,6 +592,20 @@ export class Main extends Phaser.Scene {
   private wasThrusting: boolean = false;
   private absorbSfxCooldown: number = 0; // seconds until next dust-absorb sound
 
+  // ── Juice / visual feedback ──────────────────────────────────────────────
+  private particles: BurstParticle[] = [];
+  private trailPoints: TrailPoint[] = [];
+  private floatLabels: FloatLabel[] = [];
+  private pvpKillGlowTimer: number = 0;   // seconds of gold border glow after eating a player
+  private bhRumbleCooldown: number = 0;   // throttle BH rumble sound
+  private heartbeatCooldown: number = 0;  // throttle heartbeat sound
+  private absorbFlashTimer: number = 0;   // white impact flash on player after absorbing
+  private killStreak: number = 0;         // consecutive kills before dying
+  private killStreakTimer: number = 0;    // decay timer — resets streak after inactivity
+  private milestoneText!: Phaser.GameObjects.Text;  // center-screen mass milestone pop
+  private milestoneTimer: number = 0;    // how long to display the milestone label
+  private lastMassMilestone: number = 0; // last mass threshold announced
+
   // ── Game phase / Big Shrink state ──────────────────────────────────────
   private phase!: GamePhase;
   private gameTimer!: number;       // seconds elapsed since game start
@@ -642,6 +675,18 @@ export class Main extends Phaser.Scene {
     this.disruptFlash        = 0;
     this.spawnProtectTimer   = SPAWN_PROTECT_SECS;
     this.absorbedPlayers.clear();
+    // Juice reset (Phaser destroys text objects on scene restart, so just clear arrays)
+    this.particles = [];
+    this.trailPoints = [];
+    this.floatLabels = [];
+    this.pvpKillGlowTimer = 0;
+    this.bhRumbleCooldown = 0;
+    this.heartbeatCooldown = 0;
+    this.absorbFlashTimer = 0;
+    this.killStreak = 0;
+    this.killStreakTimer = 0;
+    this.milestoneTimer = 0;
+    this.lastMassMilestone = STARTING_MASS;
     for (const lbl of this.nameLabels.values()) lbl.destroy();
     this.nameLabels.clear();
     this.remoteRender.clear();
@@ -748,6 +793,21 @@ export class Main extends Phaser.Scene {
       .setOrigin(0.5)
       .setVisible(false);
 
+    // Mass milestone announcement (center-screen pop, hidden until triggered)
+    this.milestoneText = this.add
+      .text(512, 155, "", {
+        fontFamily: "Arial Black",
+        fontSize: "30px",
+        color: "#ffdd00",
+        stroke: "#000000",
+        strokeThickness: 5,
+        align: "center",
+      })
+      .setScrollFactor(0)
+      .setDepth(21)
+      .setOrigin(0.5)
+      .setVisible(false);
+
     // Minimap — screen-space overlay, bottom-right
     this.minimapGfx = this.add.graphics().setScrollFactor(0).setDepth(22);
 
@@ -848,6 +908,7 @@ export class Main extends Phaser.Scene {
 
     // ── Freeze game logic when ended; still draw and handle R key ───────
     if (this.phase === 'escaped' || this.phase === 'consumed') {
+      this.updateJuice(dt); // keep particles / labels animating on end screen
       this.drawVignette();
       this.drawScene(dt);
       return;
@@ -1029,9 +1090,13 @@ export class Main extends Phaser.Scene {
           this.player.mass += d.mass;
           d.active = false;
           absorbed = true;
+          // Brief white flash on player for every absorption
+          this.absorbFlashTimer = Math.max(this.absorbFlashTimer, 0.10);
           if (this.absorbSfxCooldown <= 0) {
             this.sfx.absorb(d.mass);
             this.absorbSfxCooldown = 0.1;
+            const burstCount = d.mass >= 8 ? 5 : 2;
+            this.spawnBurst(d.x, d.y, burstCount, 40, 0x88aaff, 0.22);
           }
         }
       }
@@ -1058,6 +1123,9 @@ export class Main extends Phaser.Scene {
           a.active = false;
           absorbed = true;
           this.sfx.absorb(a.mass);
+          this.absorbFlashTimer = 0.25;
+          this.spawnBurst(a.x, a.y, Math.min(30, 8 + Math.floor(a.mass / 20)), 130, 0xffaa44, 0.9);
+          this.spawnFloatLabel(a.x, a.y, a.mass, 0xffaa44);
           // Screen shake proportional to asteroid mass
           const shakeMag = Math.min(0.004 + a.mass / 50000, 0.012);
           this.cameras.main.shake(220, shakeMag);
@@ -1078,6 +1146,9 @@ export class Main extends Phaser.Scene {
       this.updateEscape(dt);
     }
 
+    // ── Juice: particles, float labels, sounds ──────────────────────────
+    this.updateJuice(dt);
+
     // ── Network: send local player state at 20 Hz ──────────────────────
     this.sendTimer += dt;
     if (this.net && this.sendTimer >= this.SEND_RATE) {
@@ -1097,6 +1168,22 @@ export class Main extends Phaser.Scene {
     const newZoom = Phaser.Math.Linear(currentZoom, targetZoom, 0.04);
     this.cameras.main.setZoom(newZoom);
     this.cameras.main.centerOn(this.player.x, this.player.y);
+
+    // ── Mass milestones — announce doubling events ───────────────────────
+    {
+      const milestones = [2000, 5000, 10000, 25000, 50000, 100000];
+      for (const m of milestones) {
+        if (this.player.mass >= m && this.lastMassMilestone < m) {
+          this.lastMassMilestone = m;
+          const mult = Math.round(m / STARTING_MASS);
+          const label = mult >= 2 ? `${mult}× MASS!` : `${Math.floor(m)} MASS!`;
+          this.milestoneText.setText(label).setAlpha(1).setVisible(true);
+          this.milestoneTimer = 2.5;
+          this.spawnBurst(this.player.x, this.player.y, 25, 140, 0xffdd00, 1.2);
+          break;
+        }
+      }
+    }
 
     // ── HUD ─────────────────────────────────────────────────────────────
     const speed = Math.hypot(this.player.vx, this.player.vy);
@@ -1282,7 +1369,17 @@ export class Main extends Phaser.Scene {
         this.absorbedPlayers.add(rp.id);
         this.net.sendAbsorbPlayer(rp.id);
         this.sfx.absorb(rp.mass);
+        this.absorbFlashTimer = 0.40;
+        this.killStreak++;
+        this.killStreakTimer = 4.0;
+        this.pvpKillGlowTimer = 2.0 + this.killStreak * 0.5;
         this.cameras.main.shake(350, 0.015); // big shake for eating a player
+        this.spawnBurst(rp.x, rp.y, 50, 220, 0xffdd00, 1.3);
+        this.spawnFloatLabel(rp.x, rp.y, rp.mass, 0xffdd00);
+        if (this.killStreak >= 2) {
+          this.milestoneText.setText(`KILL STREAK ×${this.killStreak}!`).setAlpha(1).setVisible(true);
+          this.milestoneTimer = 2.2;
+        }
       } else if (rp.mass >= pm * ABSORB_RATIO && this.spawnProtectTimer <= 0) {
         // They absorb us: game over (blocked during spawn protection)
         this.phase = 'consumed';
@@ -1362,7 +1459,17 @@ export class Main extends Phaser.Scene {
           this.player.mass = tm;
           bot.active = false;
           this.sfx.absorb(bot.mass);
+          this.absorbFlashTimer = 0.35;
+          this.killStreak++;
+          this.killStreakTimer = 4.0;
+          this.pvpKillGlowTimer = 2.0 + this.killStreak * 0.5;
           this.cameras.main.shake(350, 0.015);
+          this.spawnBurst(bot.x, bot.y, 40, 190, 0xff7700, 1.1);
+          this.spawnFloatLabel(bot.x, bot.y, bot.mass, 0xff7700);
+          if (this.killStreak >= 2) {
+            this.milestoneText.setText(`KILL STREAK ×${this.killStreak}!`).setAlpha(1).setVisible(true);
+            this.milestoneTimer = 2.2;
+          }
         }
       }
     }
@@ -1655,6 +1762,9 @@ export class Main extends Phaser.Scene {
       this.drawEscapeAura(x, y, radius);
     }
 
+    // ── Engine exhaust trail + burst particles (juice) ───────────────────
+    this.drawJuice(dt);
+
     // ── Thrust exhaust flame ─────────────────────────────────────────────
     if (thrustingThisFrame) {
       const cos = Math.cos(rotation);
@@ -1684,9 +1794,22 @@ export class Main extends Phaser.Scene {
       this.gfx.strokeCircle(x, y, radius * 1.2);
     }
 
-    // ── Gravity well glow ────────────────────────────────────────────────
-    this.gfx.fillStyle(0xffffff, 0.04);
-    this.gfx.fillCircle(x, y, radius * 2.2);
+    // ── Absorption impact flash — white halo burst on absorb ─────────────
+    if (this.absorbFlashTimer > 0) {
+      const ft = this.absorbFlashTimer / 0.40; // normalise to peak flash duration
+      this.gfx.fillStyle(0xffffff, ft * 0.45);
+      this.gfx.fillCircle(x, y, radius * (1.3 + ft * 0.9));
+      this.gfx.lineStyle(Math.max(1, radius * 0.06), 0xffffff, ft * 0.9);
+      this.gfx.strokeCircle(x, y, radius * (1.1 + ft * 0.4));
+    }
+
+    // ── Pulsing mass glow (scales and breathes with mass) ────────────────
+    const glowPulse   = 0.04 + 0.025 * Math.sin(this.time.now / 280);
+    const massFrac    = Math.min(1, mass / 4000);
+    const glowRadius  = radius * (2.2 + massFrac * 1.2);
+    const glowColor   = mass > 2000 ? 0xffaa00 : 0xffffff;
+    this.gfx.fillStyle(glowColor, glowPulse);
+    this.gfx.fillCircle(x, y, glowRadius);
 
     // ── Player body — color shifts blue → yellow → red with mass ─────────
     const t = Math.min(1, mass / 5000);
@@ -1781,6 +1904,21 @@ export class Main extends Phaser.Scene {
       return;
     }
 
+    // Speed lines (drawn regardless of phase while playing)
+    const speed = Math.hypot(this.player.vx, this.player.vy);
+    this.drawSpeedLines(speed);
+
+    // PvP kill glow — gold border escalates with kill streak
+    if (this.pvpKillGlowTimer > 0) {
+      const maxTimer = 2.0 + this.killStreak * 0.5;
+      const t = this.pvpKillGlowTimer / maxTimer;
+      const streakBonus = Math.min(3, this.killStreak);
+      const thickness = 10 + t * 6 + streakBonus * 4;
+      const color = this.killStreak >= 3 ? 0xff4400 : this.killStreak >= 2 ? 0xffcc00 : 0xffaa00;
+      this.vignetteGfx.lineStyle(thickness, color, t * 0.80);
+      this.vignetteGfx.strokeRect(0, 0, gw, gh);
+    }
+
     if (this.phase !== 'shrinking') return;
 
     // Darkness creeps in as player approaches BH
@@ -1793,6 +1931,162 @@ export class Main extends Phaser.Scene {
     if (danger > 0) {
       this.vignetteGfx.fillStyle(0x000000, danger * 0.55);
       this.vignetteGfx.fillRect(0, 0, gw, gh);
+    }
+  }
+
+  // ─── Juice helpers ──────────────────────────────────────────────────────
+
+  /** Spawn N burst particles at world position (x,y). */
+  private spawnBurst(x: number, y: number, count: number, speed: number, color: number, life: number) {
+    for (let i = 0; i < count; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const spd   = speed * (0.35 + Math.random() * 0.8);
+      this.particles.push({ x, y, vx: Math.cos(angle) * spd, vy: Math.sin(angle) * spd, life, maxLife: life, color, r: 1.5 + Math.random() * 3.5 });
+    }
+  }
+
+  /** Spawn a floating "+mass" label at world position (x,y). */
+  private spawnFloatLabel(x: number, y: number, mass: number, color: number = 0x00ff88) {
+    const hex   = '#' + color.toString(16).padStart(6, '0');
+    const size  = Math.max(14, Math.min(36, 10 + Math.sqrt(mass)));
+    const label = this.add.text(x, y, `+${Math.floor(mass)}`, {
+      fontSize: size + 'px',
+      fontFamily: 'monospace',
+      color: hex,
+      stroke: '#000000',
+      strokeThickness: 3,
+    }).setDepth(20).setOrigin(0.5, 1);
+    this.floatLabels.push({ text: label, vy: -55 - Math.random() * 30, life: 1.4, maxLife: 1.4 });
+  }
+
+  /** Update particles, trail, float labels, timers; play BH rumble / heartbeat. */
+  private updateJuice(dt: number) {
+    // Burst particles
+    for (const p of this.particles) {
+      p.x   += p.vx * dt;
+      p.y   += p.vy * dt;
+      p.vx  *= 0.90;
+      p.vy  *= 0.90;
+      p.life -= dt;
+    }
+    this.particles = this.particles.filter(p => p.life > 0);
+
+    // Float labels
+    for (const fl of this.floatLabels) {
+      fl.text.y += fl.vy * dt;
+      fl.life   -= dt;
+      const t    = fl.life / fl.maxLife;
+      fl.text.setAlpha(t < 0.25 ? t / 0.25 : 1);
+    }
+    this.floatLabels = this.floatLabels.filter(fl => {
+      if (fl.life <= 0) { if (fl.text.active) fl.text.destroy(); return false; }
+      return true;
+    });
+
+    // Trail: age is tracked in drawJuice
+    this.trailPoints = this.trailPoints.filter(tp => tp.life > 0);
+
+    // Kill glow decay
+    if (this.pvpKillGlowTimer > 0) this.pvpKillGlowTimer = Math.max(0, this.pvpKillGlowTimer - dt);
+
+    // Absorption flash decay
+    if (this.absorbFlashTimer > 0) this.absorbFlashTimer = Math.max(0, this.absorbFlashTimer - dt);
+
+    // Kill streak decay — reset after inactivity
+    if (this.killStreakTimer > 0) {
+      this.killStreakTimer = Math.max(0, this.killStreakTimer - dt);
+      if (this.killStreakTimer <= 0) this.killStreak = 0;
+    }
+
+    // Milestone text fade-out
+    if (this.milestoneTimer > 0) {
+      this.milestoneTimer = Math.max(0, this.milestoneTimer - dt);
+      const alpha = this.milestoneTimer < 0.5 ? this.milestoneTimer / 0.5 : 1;
+      this.milestoneText.setAlpha(alpha);
+      if (this.milestoneTimer <= 0) this.milestoneText.setVisible(false);
+    }
+
+    // BH rumble (throttled, only during shrink)
+    if (this.phase === 'shrinking') {
+      this.bhRumbleCooldown = Math.max(0, this.bhRumbleCooldown - dt);
+      if (this.bhRumbleCooldown <= 0) {
+        const dist      = Math.hypot(this.player.x - WORLD_SIZE / 2, this.player.y - WORLD_SIZE / 2);
+        const intensity = Math.max(0, 1 - dist / 2200);
+        if (intensity > 0.08) {
+          this.sfx.bhRumble(intensity);
+          this.bhRumbleCooldown = 0.55;
+        }
+      }
+    }
+
+    // Heartbeat when mass drops below 80% of starting mass
+    if (this.phase === 'playing' || this.phase === 'shrinking') {
+      this.heartbeatCooldown = Math.max(0, this.heartbeatCooldown - dt);
+      if (this.heartbeatCooldown <= 0 && this.player.mass < STARTING_MASS * 0.8) {
+        this.sfx.heartbeat();
+        const ratio = Math.max(0.1, this.player.mass / (STARTING_MASS * 0.8));
+        this.heartbeatCooldown = 0.25 + ratio * 0.85; // 0.25s (near-dead) → 1.1s (barely low)
+      }
+    }
+  }
+
+  /** Draw burst particles and engine exhaust trail into gfx. dt needed to tick trail. */
+  private drawJuice(dt: number) {
+    // Engine exhaust trail: push new point when thrusting
+    if (this.player.thrustingThisFrame) {
+      const cos = Math.cos(this.player.rotation);
+      const sin = Math.sin(this.player.rotation);
+      this.trailPoints.push({
+        x: this.player.x - cos * this.player.radius * 0.8,
+        y: this.player.y - sin * this.player.radius * 0.8,
+        life: 0.35, maxLife: 0.35,
+      });
+    }
+    // Age trail points and draw them
+    for (const tp of this.trailPoints) {
+      tp.life -= dt;
+      if (tp.life <= 0) continue;
+      const t = tp.life / tp.maxLife;           // 1 → 0
+      const r = (3 + t * 5) * this.player.radius / 40; // scale with player size
+      this.gfx.fillStyle(0xff5500, t * 0.55);
+      this.gfx.fillCircle(tp.x, tp.y, r);
+      this.gfx.fillStyle(0xffcc00, t * 0.35);
+      this.gfx.fillCircle(tp.x, tp.y, r * 0.5);
+    }
+
+    // Burst particles
+    for (const p of this.particles) {
+      if (p.life <= 0) continue;
+      const t = p.life / p.maxLife;
+      this.gfx.fillStyle(p.color, t * 0.85);
+      this.gfx.fillCircle(p.x, p.y, Math.max(0.5, p.r * t));
+    }
+  }
+
+  /** Speed lines drawn in screen-space into vignetteGfx (must be called AFTER clear). */
+  private drawSpeedLines(speed: number) {
+    const MIN_SPEED = 200;
+    if (speed < MIN_SPEED) return;
+    const t = Math.min(1, (speed - MIN_SPEED) / 300); // 0 at 200px/s → 1 at 500px/s
+    if (t < 0.05) return;
+    const gw    = this.scale.width;
+    const gh    = this.scale.height;
+    const cx    = gw / 2;
+    const cy    = gh / 2;
+    const angle = Math.atan2(this.player.vy, this.player.vx);
+    const count = Math.floor(t * 10) + 2;
+    for (let i = 0; i < count; i++) {
+      // Spread evenly + slight offset — deterministic per i so no flicker
+      const spread   = ((i / count) - 0.5) * Math.PI * 1.3;
+      const lineAng  = angle + spread + Math.PI;
+      const startD   = 50 + (i * 23) % 120;
+      const len      = 25 + t * 70;
+      const x0 = cx + Math.cos(lineAng) * startD;
+      const y0 = cy + Math.sin(lineAng) * startD;
+      const x1 = cx + Math.cos(lineAng) * (startD + len);
+      const y1 = cy + Math.sin(lineAng) * (startD + len);
+      this.vignetteGfx.lineStyle(0.8 + t * 1.2, 0x99ccff, t * 0.30);
+      this.vignetteGfx.lineBetween(x0, y0, x1, y1);
     }
   }
 
