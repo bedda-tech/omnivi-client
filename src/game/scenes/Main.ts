@@ -1092,7 +1092,7 @@ export class Main extends Phaser.Scene {
     }
 
     // ── Camera: follow player with dynamic zoom ─────────────────────────
-    const targetZoom = Phaser.Math.Clamp(550 / this.player.radius, 0.15, 3);
+    const targetZoom = Phaser.Math.Clamp(180 / this.player.radius, 0.15, 1.5);
     const currentZoom = this.cameras.main.zoom;
     const newZoom = Phaser.Math.Linear(currentZoom, targetZoom, 0.04);
     this.cameras.main.setZoom(newZoom);
