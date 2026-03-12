@@ -1,6 +1,6 @@
 import Phaser from "phaser";
 import { EventBus } from "../EventBus";
-import { NetworkManager, getOrCreatePlayerName } from "../NetworkManager";
+import { NetworkManager, getOrCreatePlayerName, getStoredTier, TIER_INFO } from "../NetworkManager";
 import { connectWallet } from "../blockchain/ClaimClient";
 
 // ─── Constants ─────────────────────────────────────────────────────────────
@@ -11,7 +11,7 @@ const THRUST_FORCE = 250;        // pixels/s² acceleration
 const THRUST_MASS_COST = 0.8;    // mass lost per thrust tick (60fps assumed)
 const DRAG = 0.992;              // velocity multiplier per frame
 const MAX_SPEED = 500;
-const DUST_EMIT_MASS = 2;        // mass of each emitted dust particle
+const DUST_EMIT_MASS = 0.3;      // mass of each emitted dust particle (must be < THRUST_MASS_COST)
 const INITIAL_DUST_COUNT = 300;  // dust seeded at match start
 const MAX_DUST = 600;
 const ABSORB_RATIO = 1.5;        // must be this times larger to absorb
@@ -31,7 +31,7 @@ const GRAVITY_MIN_DIST_SQ = 900; // 30px — avoid singularity
 const MAX_G_ACCEL = 500;         // px/s² cap (prevents lag-spike explosions)
 
 // ─── Black Hole / Big Shrink ─────────────────────────────────────────────────
-const SHRINK_START_DELAY = 90;    // seconds of normal play before Big Shrink
+const SHRINK_START_DELAY = 180;   // seconds of normal play before Big Shrink (3-min rounds)
 const BH_INITIAL_MASS    = 8000;  // starting BH mass (radius ≈ 179px)
 const BH_GROWTH_RATE     = 200;   // mass/second added to BH
 const BH_GRAVITY_MULT    = 5.0;   // BH gravity multiplier over GRAVITY_G
@@ -43,6 +43,28 @@ const ESCAPE_DISRUPT_RATIO = 0.5;   // disrupted if hit by object > this × play
 
 // ─── Spawn Protection ───────────────────────────────────────────────────────
 const SPAWN_PROTECT_SECS = 5; // seconds of invulnerability after spawning
+
+// ─── Skill Abilities ─────────────────────────────────────────────────────────
+const BOOST_MASS_COST_PCT = 0.05;   // 5% of mass spent per boost
+const BOOST_IMPULSE       = 350;    // px/s velocity impulse on boost
+const BOOST_COOLDOWN      = 5.0;    // seconds between boosts
+const EJECT_MASS_PCT      = 0.10;   // 10% of mass ejected per fire
+const EJECT_MASS_MIN      = 20;     // minimum ejected mass
+const EJECT_MASS_MAX      = 250;    // cap on ejected mass
+const EJECT_SPEED         = 600;    // px/s — projectile exit speed (relative to player)
+const EJECT_COOLDOWN      = 1.0;    // seconds between ejects
+const CLUTCH_MASS_THRESH  = 150;    // mass below this = clutch escape (fanfare)
+const SHIELD_MASS_COST_PCT = 0.08;  // 8% of mass spent per shield activation
+const SHIELD_DURATION      = 2.5;   // seconds of invulnerability
+const SHIELD_COOLDOWN      = 8.0;   // seconds between shield uses
+const COMBO_TIMEOUT       = 2.5;    // seconds of inactivity before combo resets
+const COMBO_ANNOUNCE_THRESHOLDS = [5, 10, 20, 50] as const;
+
+// ─── Round Economy ──────────────────────────────────────────────────────────
+// 40 game-mass units = 1 VI token; matches TIER_START_MASS in OmniviRoom
+const MASS_PER_TOKEN  = 40;
+// Demo price: 1 VI = $0.05 USD (testnet placeholder; replace with oracle in prod)
+const VI_PRICE_USD    = 0.05;
 
 // ─── AI Bots ────────────────────────────────────────────────────────────────
 const BOT_COUNT       = 4;
@@ -165,6 +187,49 @@ class SfxManager {
     this.tone(48, 'sine', 0.10, 0.15, 32, 0.16);
   }
 
+  /** Whoosh for boost burst. */
+  boost() {
+    void this.ctx.resume();
+    this.tone(180, 'sawtooth', 0.12, 0.20, 500);
+    this.tone(260, 'sine',     0.18, 0.13, 640);
+  }
+
+  /** Chunky thud for mass ejection projectile. */
+  eject() {
+    void this.ctx.resume();
+    this.tone(120, 'sine',     0.22, 0.30, 40);
+    this.tone(170, 'sawtooth', 0.10, 0.10, 55);
+  }
+
+  /** Shield activation — resonant bell ping. */
+  shield() {
+    void this.ctx.resume();
+    this.tone(880, 'sine', 0.06, 0.25, 1320);
+    this.tone(660, 'sine', 0.40, 0.15, 440);
+  }
+
+  /** Shield break/expire — descending sizzle. */
+  shieldBreak() {
+    void this.ctx.resume();
+    this.tone(440, 'sawtooth', 0.18, 0.12, 110);
+  }
+
+  /** Extended fanfare for clutch escape at low mass. */
+  clutchEscape() {
+    void this.ctx.resume();
+    const notes = [261, 392, 523, 659, 784, 1046];
+    notes.forEach((hz, i) => this.tone(hz, 'sine', 0.40, 0.36, hz * 1.1, i * 0.08));
+  }
+
+  /** Rising arpeggio for combo milestones — pitch scales with combo level. */
+  combo(level: number) {
+    void this.ctx.resume();
+    const base = Math.min(300 + level * 20, 700);
+    this.tone(base,        'sine', 0.18, 0.12, base * 1.5);
+    this.tone(base * 1.25, 'sine', 0.14, 0.10, base * 1.5, 0.07);
+    this.tone(base * 1.5,  'sine', 0.10, 0.08, base * 1.5, 0.14);
+  }
+
   destroy() {
     if (this.thrustOsc) { try { this.thrustOsc.stop(); } catch { /* already stopped */ } }
     void this.ctx.close();
@@ -200,6 +265,9 @@ class DustParticle {
   vy: number;
   mass: number;
   active: boolean = true;
+  /** True if ejected by local player thrust; immune to player absorption for 500ms */
+  playerEjected: boolean = false;
+  playerImmuneUntil: number = 0;
 
   constructor(x: number, y: number, vx: number, vy: number, mass: number) {
     this.x = x;
@@ -373,9 +441,10 @@ class Player {
     const cos = Math.cos(this.rotation);
     const sin = Math.sin(this.rotation);
 
-    // Accelerate forward
-    this.vx += cos * THRUST_FORCE * dt;
-    this.vy += sin * THRUST_FORCE * dt;
+    // Accelerate forward — bigger players have weaker thrust (skill expression)
+    const thrustScale = Math.sqrt(STARTING_MASS / this.mass);
+    this.vx += cos * THRUST_FORCE * thrustScale * dt;
+    this.vy += sin * THRUST_FORCE * thrustScale * dt;
 
     // Clamp speed
     const speed = Math.hypot(this.vx, this.vy);
@@ -384,8 +453,8 @@ class Player {
       this.vy = (this.vy / speed) * MAX_SPEED;
     }
 
-    // Expel mass as dust from the back of the player
-    const massLost = THRUST_MASS_COST;
+    // Expel mass as dust from the back of the player (proportional to size)
+    const massLost = Math.max(THRUST_MASS_COST, this.mass * 0.001);
     this.mass = Math.max(15, this.mass - massLost);
 
     const ejectSpeed = 150;
@@ -565,6 +634,9 @@ export class Main extends Phaser.Scene {
   private keyS!: Phaser.Input.Keyboard.Key;
   private keyD!: Phaser.Input.Keyboard.Key;
   private keyE!: Phaser.Input.Keyboard.Key;           // initiate escape
+  private keyShift!: Phaser.Input.Keyboard.Key;       // boost burst
+  private keyQ!: Phaser.Input.Keyboard.Key;           // mass eject
+  private keyF!: Phaser.Input.Keyboard.Key;           // shield
   private pointer!: Phaser.Input.Pointer;
   private mouseDown: boolean = false;
   private gamepad: Phaser.Input.Gamepad.Gamepad | null = null;
@@ -586,6 +658,10 @@ export class Main extends Phaser.Scene {
   private remoteRender = new Map<string, { renderX: number; renderY: number }>();
   /** Connected wallet address (if MetaMask available), used for on-chain claim. */
   private walletAddress: string = "";
+  /** Entry tier this session (0=Quick, 1=Standard, 2=HighRoller). */
+  private playerTier: number = 1;
+  /** VI tokens staked this session (buy-in reference for loss-aversion HUD). */
+  private buyInTokens: number = 25;
 
   // ── Sound ────────────────────────────────────────────────────────────────
   private sfx!: SfxManager;
@@ -605,6 +681,20 @@ export class Main extends Phaser.Scene {
   private milestoneText!: Phaser.GameObjects.Text;  // center-screen mass milestone pop
   private milestoneTimer: number = 0;    // how long to display the milestone label
   private lastMassMilestone: number = 0; // last mass threshold announced
+
+  // ── Skill ability state ──────────────────────────────────────────────
+  private boostCooldown: number = 0;  // seconds until boost is ready
+  private ejectCooldown: number = 0;  // seconds until eject is ready
+  private shieldTimer: number = 0;    // seconds of shield remaining (0 = off)
+  private shieldCooldown: number = 0; // seconds until shield is usable again
+
+  private slingshotCooldown: number = 0; // prevents spam gravity-assist label
+
+  // ── Absorption combo ─────────────────────────────────────────────────
+  private absorbCombo: number = 0;                     // current combo count
+  private absorbComboTimer: number = 0;                // seconds before combo resets
+  private bestCombo: number = 0;                       // best combo this life
+  private comboAnnounced = new Set<number>();           // thresholds already shown
 
   // ── Game phase / Big Shrink state ──────────────────────────────────────
   private phase!: GamePhase;
@@ -685,6 +775,15 @@ export class Main extends Phaser.Scene {
     this.absorbFlashTimer = 0;
     this.killStreak = 0;
     this.killStreakTimer = 0;
+    this.boostCooldown = 0;
+    this.ejectCooldown = 0;
+    this.shieldTimer = 0;
+    this.shieldCooldown = 0;
+    this.slingshotCooldown = 0;
+    this.absorbCombo = 0;
+    this.absorbComboTimer = 0;
+    this.bestCombo = 0;
+    this.comboAnnounced.clear();
     this.milestoneTimer = 0;
     this.lastMassMilestone = STARTING_MASS;
     for (const lbl of this.nameLabels.values()) lbl.destroy();
@@ -728,7 +827,7 @@ export class Main extends Phaser.Scene {
 
     // Phase/escape status — centered at top
     this.phaseText = this.add
-      .text(512, 12, "", {
+      .text(this.scale.width / 2, 12, "", {
         fontSize: "15px",
         color: "#ffcc00",
         stroke: "#000000",
@@ -741,7 +840,7 @@ export class Main extends Phaser.Scene {
 
     // End-screen overlay elements (hidden until game ends)
     this.endText = this.add
-      .text(512, 210, "", {
+      .text(this.scale.width / 2, 210, "", {
         fontFamily: "Arial Black",
         fontSize: "44px",
         color: "#ffffff",
@@ -755,7 +854,7 @@ export class Main extends Phaser.Scene {
       .setVisible(false);
 
     this.statsText = this.add
-      .text(512, 300, "", {
+      .text(this.scale.width / 2, 300, "", {
         fontFamily: "monospace",
         fontSize: "18px",
         color: "#dddddd",
@@ -770,7 +869,7 @@ export class Main extends Phaser.Scene {
       .setVisible(false);
 
     this.restartText = this.add
-      .text(512, 405, "[ R ]  Play Again", {
+      .text(this.scale.width / 2, 405, "[ R ]  Play Again", {
         fontSize: "20px",
         color: "#00ff88",
         stroke: "#000000",
@@ -782,7 +881,7 @@ export class Main extends Phaser.Scene {
       .setVisible(false);
 
     this.menuKeyText = this.add
-      .text(512, 438, "[ M ]  Main Menu", {
+      .text(this.scale.width / 2, 438, "[ M ]  Main Menu", {
         fontSize: "20px",
         color: "#aaaaff",
         stroke: "#000000",
@@ -795,7 +894,7 @@ export class Main extends Phaser.Scene {
 
     // Mass milestone announcement (center-screen pop, hidden until triggered)
     this.milestoneText = this.add
-      .text(512, 155, "", {
+      .text(this.scale.width / 2, 155, "", {
         fontFamily: "Arial Black",
         fontSize: "30px",
         color: "#ffdd00",
@@ -825,13 +924,28 @@ export class Main extends Phaser.Scene {
       .setDepth(22)
       .setOrigin(1, 0);
 
+    // Reposition center-anchored HUD on resize
+    this.scale.on("resize", (gameSize: Phaser.Structs.Size) => {
+      const cx = gameSize.width / 2;
+      this.phaseText.setX(cx);
+      this.endText.setX(cx);
+      this.statsText.setX(cx);
+      this.restartText.setX(cx);
+      this.menuKeyText.setX(cx);
+      this.milestoneText.setX(cx);
+      this.leaderboardText.setX(gameSize.width - 14);
+    });
+
     // Keyboard input
     this.cursors = this.input.keyboard!.createCursorKeys();
     this.keyW = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.W);
     this.keyA = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.A);
     this.keyS = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.S);
     this.keyD = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.D);
-    this.keyE = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.E);
+    this.keyE     = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.E);
+    this.keyShift = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
+    this.keyQ     = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.Q);
+    this.keyF     = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.F);
 
     // Mouse input
     this.pointer = this.input.activePointer;
@@ -870,12 +984,15 @@ export class Main extends Phaser.Scene {
     });
 
     // ── Network: connect to Colyseus server (graceful if offline) ─────
+    this.playerTier    = getStoredTier();
+    this.buyInTokens   = TIER_INFO[this.playerTier].viCost;
+
     this.net = new NetworkManager();
     this.net.onPlayerRemoved((id) => {
       this.nameLabels.get(id)?.destroy();
       this.nameLabels.delete(id);
     });
-    this.net.connect(getOrCreatePlayerName()).catch((err: unknown) => {
+    this.net.connect(getOrCreatePlayerName(), this.playerTier).catch((err: unknown) => {
       console.warn("[Net] Server unavailable — playing offline:", err);
       this.net = null;
     });
@@ -884,6 +1001,24 @@ export class Main extends Phaser.Scene {
     this.net?.onClaimReady((payload) => {
       window.dispatchEvent(new CustomEvent("omnivi:claim_ready", { detail: payload }));
     });
+
+    // Kill bounty: apply bonus mass and show floating label
+    this.net?.onKillBounty((payload) => {
+      // Apply the bonus mass to the player (server already credited it server-side)
+      this.player.mass += payload.bonusMass;
+      this.spawnFloatLabel(
+        this.player.x + (Math.random() - 0.5) * 60,
+        this.player.y - 80,
+        payload.bonusMass,
+        0xffd700,
+      );
+    });
+
+    // Re-stake: React layer dispatches this after a successful on-chain restake
+    const onRestakeDone = () => this.scene.restart();
+    window.addEventListener("omnivi:restake_done", onRestakeDone, { once: true });
+    this.events.once('shutdown', () =>
+      window.removeEventListener("omnivi:restake_done", onRestakeDone));
 
     // Sound (create after scene is active so AudioContext has a user gesture)
     this.sfx = new SfxManager();
@@ -968,9 +1103,10 @@ export class Main extends Phaser.Scene {
     if (thrusting) {
       const ejected = this.player.applyThrust(dt);
       if (ejected && this.dust.length < MAX_DUST) {
-        this.dust.push(
-          new DustParticle(ejected.x, ejected.y, ejected.vx, ejected.vy, ejected.mass)
-        );
+        const d = new DustParticle(ejected.x, ejected.y, ejected.vx, ejected.vy, ejected.mass);
+        d.playerEjected = true;
+        d.playerImmuneUntil = Date.now() + 500;
+        this.dust.push(d);
       }
     }
 
@@ -1044,6 +1180,7 @@ export class Main extends Phaser.Scene {
       }
 
       // Asteroid gravity on player (large rocks are dangerous!)
+      const speedBeforeAsteroidGrav = Math.hypot(this.player.vx, this.player.vy);
       for (const a of this.asteroids) {
         const dx = a.x - this.player.x;
         const dy = a.y - this.player.y;
@@ -1056,6 +1193,16 @@ export class Main extends Phaser.Scene {
         if (amag > MAX_G_ACCEL) { agx = agx / amag * MAX_G_ACCEL; agy = agy / amag * MAX_G_ACCEL; }
         this.player.vx += agx * dt;
         this.player.vy += agy * dt;
+      }
+      // Gravity slingshot indicator: player gained significant speed from a planet
+      const speedAfterAsteroidGrav = Math.hypot(this.player.vx, this.player.vy);
+      if (
+        speedAfterAsteroidGrav - speedBeforeAsteroidGrav >= 28 &&
+        this.slingshotCooldown <= 0 &&
+        this.asteroids.some(a => a.mass >= PLANET_THRESHOLD)
+      ) {
+        this.slingshotCooldown = 6.0;
+        this.spawnFloatText(this.player.x, this.player.y - this.player.radius - 10, "GRAVITY ASSIST!", 0x44ffaa);
       }
     }
 
@@ -1081,8 +1228,10 @@ export class Main extends Phaser.Scene {
       const px = this.player.x;
       const py = this.player.y;
       let absorbed = false;
+      const now = Date.now();
       for (const d of this.dust) {
         if (!d.active) continue;
+        if (d.playerEjected && now < d.playerImmuneUntil) continue;
         if (this.player.mass < d.mass * ABSORB_RATIO) continue;
         const dx = d.x - px;
         const dy = d.y - py;
@@ -1090,6 +1239,7 @@ export class Main extends Phaser.Scene {
           this.player.mass += d.mass;
           d.active = false;
           absorbed = true;
+          this.bumpCombo(1);
           // Brief white flash on player for every absorption
           this.absorbFlashTimer = Math.max(this.absorbFlashTimer, 0.10);
           if (this.absorbSfxCooldown <= 0) {
@@ -1122,6 +1272,7 @@ export class Main extends Phaser.Scene {
           this.player.mass = tm;
           a.active = false;
           absorbed = true;
+          this.bumpCombo(3);   // asteroid absorptions are rarer and more skillful
           this.sfx.absorb(a.mass);
           this.absorbFlashTimer = 0.25;
           this.spawnBurst(a.x, a.y, Math.min(30, 8 + Math.floor(a.mass / 20)), 130, 0xffaa44, 0.9);
@@ -1133,6 +1284,10 @@ export class Main extends Phaser.Scene {
       }
       if (absorbed) this.asteroids = this.asteroids.filter(a => a.active);
     }
+
+    // ── Skill abilities: boost burst, mass eject, shield ──────────────
+    this.updateSkills(dt);
+    this.updateCombo(dt);
 
     // ── PvP: player absorbs / is absorbed by remote players ────────────
     this.checkPvP();
@@ -1189,7 +1344,15 @@ export class Main extends Phaser.Scene {
     const speed = Math.hypot(this.player.vx, this.player.vy);
     const planetCount = this.asteroids.filter(a => a.mass >= PLANET_THRESHOLD).length;
     const asteroidCount = this.asteroids.length - planetCount;
+    const currentVI    = this.player.mass / MASS_PER_TOKEN;
+    const deltaVI      = currentVI - this.buyInTokens;
+    const currentUSD   = currentVI * VI_PRICE_USD;
+    const deltaUSD     = deltaVI * VI_PRICE_USD;
+    const deltaUSDStr  = deltaUSD >= 0 ? `+$${deltaUSD.toFixed(2)}` : `-$${Math.abs(deltaUSD).toFixed(2)}`;
+    const tierLabel    = TIER_INFO[this.playerTier].label;
+    const losing       = deltaVI < 0;
     const hudLines = [
+      `$${currentUSD.toFixed(2)}  (${deltaUSDStr})  [${tierLabel} ${this.buyInTokens}VI = $${(this.buyInTokens * VI_PRICE_USD).toFixed(2)}]`,
       `Mass:     ${Math.floor(this.player.mass)}`,
       `Radius:   ${this.player.radius.toFixed(1)} px`,
       `Speed:    ${speed.toFixed(0)} px/s`,
@@ -1200,6 +1363,22 @@ export class Main extends Phaser.Scene {
     if (this.spawnProtectTimer > 0) {
       hudLines.push(`SHIELD:   ${this.spawnProtectTimer.toFixed(1)}s`);
     }
+    const boostReady  = this.boostCooldown <= 0;
+    const ejectReady  = this.ejectCooldown <= 0;
+    const shieldReady = this.shieldCooldown <= 0;
+    const shieldHUD   = this.shieldTimer > 0
+      ? `ACTIVE ${this.shieldTimer.toFixed(1)}s`
+      : shieldReady ? "READY" : this.shieldCooldown.toFixed(1) + "s";
+    hudLines.push(
+      `[SHIFT] Boost: ${boostReady ? "READY" : this.boostCooldown.toFixed(1) + "s"}   ` +
+      `[Q] Eject: ${ejectReady ? "READY" : this.ejectCooldown.toFixed(1) + "s"}   ` +
+      `[F] Shield: ${shieldHUD}`,
+    );
+    if (this.absorbCombo > 1) {
+      hudLines.push(`COMBO ×${this.absorbCombo}  (resets in ${this.absorbComboTimer.toFixed(1)}s)`);
+    }
+    // Loss aversion: turn HUD red when below buy-in, green when profiting
+    this.massText.setColor(losing ? "#ff3333" : deltaVI > 0 ? "#00ff88" : "#ffffff");
     this.massText.setText(hudLines.join("\n"));
 
     this.updatePhaseHUD();
@@ -1336,6 +1515,117 @@ export class Main extends Phaser.Scene {
     this.phaseText.setText(reason).setColor("#ff4400");
   }
 
+  // ─── Skill Abilities: Boost + Mass Eject + Shield ──────────────────────────
+  private updateSkills(dt: number) {
+    this.boostCooldown    = Math.max(0, this.boostCooldown - dt);
+    this.ejectCooldown    = Math.max(0, this.ejectCooldown - dt);
+    this.slingshotCooldown = Math.max(0, this.slingshotCooldown - dt);
+
+    // Tick down shield and cooldown
+    if (this.shieldTimer > 0) {
+      this.shieldTimer -= dt;
+      if (this.shieldTimer <= 0) {
+        this.shieldTimer = 0;
+        this.sfx.shieldBreak();
+      }
+    }
+    this.shieldCooldown = Math.max(0, this.shieldCooldown - dt);
+
+    // BOOST BURST — Shift key: spend 5% mass for a velocity impulse
+    if (Phaser.Input.Keyboard.JustDown(this.keyShift)) {
+      if (this.boostCooldown <= 0 && this.player.mass > 100) {
+        const massCost = Math.max(15, this.player.mass * BOOST_MASS_COST_PCT);
+        this.player.mass = Math.max(15, this.player.mass - massCost);
+        const cos = Math.cos(this.player.rotation);
+        const sin = Math.sin(this.player.rotation);
+        this.player.vx += cos * BOOST_IMPULSE;
+        this.player.vy += sin * BOOST_IMPULSE;
+        this.boostCooldown = BOOST_COOLDOWN;
+        this.sfx.boost();
+        this.spawnBurst(this.player.x, this.player.y, 18, 110, 0x00eeff, 0.7);
+        this.cameras.main.shake(120, 0.007);
+      }
+    }
+
+    // MASS EJECT — Q key: eject 10% mass as fast projectile
+    if (Phaser.Input.Keyboard.JustDown(this.keyQ)) {
+      if (this.ejectCooldown <= 0 && this.player.mass > 80) {
+        const ejMass = Phaser.Math.Clamp(
+          this.player.mass * EJECT_MASS_PCT,
+          EJECT_MASS_MIN,
+          EJECT_MASS_MAX,
+        );
+        this.player.mass = Math.max(15, this.player.mass - ejMass);
+
+        // Recoil: push player back (momentum conservation, capped)
+        const cos = Math.cos(this.player.rotation);
+        const sin = Math.sin(this.player.rotation);
+        this.player.vx -= cos * (ejMass * 0.6);
+        this.player.vy -= sin * (ejMass * 0.6);
+        const recoilSpd = Math.hypot(this.player.vx, this.player.vy);
+        if (recoilSpd > MAX_SPEED) {
+          this.player.vx = (this.player.vx / recoilSpd) * MAX_SPEED;
+          this.player.vy = (this.player.vy / recoilSpd) * MAX_SPEED;
+        }
+
+        // Spawn projectile dust chunk ahead of player
+        const spawnX = this.player.x + cos * (this.player.radius + 6);
+        const spawnY = this.player.y + sin * (this.player.radius + 6);
+        const proj = new DustParticle(
+          spawnX, spawnY,
+          this.player.vx + cos * EJECT_SPEED,
+          this.player.vy + sin * EJECT_SPEED,
+          ejMass,
+        );
+        proj.playerEjected = true;
+        proj.playerImmuneUntil = Date.now() + 2000; // can't reabsorb own eject for 2s
+        this.dust.push(proj);
+
+        this.ejectCooldown = EJECT_COOLDOWN;
+        this.sfx.eject();
+        this.spawnBurst(spawnX, spawnY, 10, 70, 0xff8800, 0.55);
+      }
+    }
+
+    // SHIELD — F key: spend 8% mass for 2.5s of invulnerability
+    if (Phaser.Input.Keyboard.JustDown(this.keyF)) {
+      if (this.shieldCooldown <= 0 && this.player.mass > 80) {
+        const massCost = Math.max(10, this.player.mass * SHIELD_MASS_COST_PCT);
+        this.player.mass = Math.max(15, this.player.mass - massCost);
+        this.shieldTimer    = SHIELD_DURATION;
+        this.shieldCooldown = SHIELD_COOLDOWN;
+        this.sfx.shield();
+        this.spawnBurst(this.player.x, this.player.y, 20, 90, 0xffdd00, 0.8);
+      }
+    }
+  }
+
+  /** Increment the absorption combo and announce at key thresholds. */
+  private bumpCombo(amount: number = 1) {
+    this.absorbCombo += amount;
+    this.absorbComboTimer = COMBO_TIMEOUT;
+    if (this.absorbCombo > this.bestCombo) this.bestCombo = this.absorbCombo;
+    for (const thresh of COMBO_ANNOUNCE_THRESHOLDS) {
+      if (this.absorbCombo >= thresh && !this.comboAnnounced.has(thresh)) {
+        this.comboAnnounced.add(thresh);
+        this.milestoneText.setText(`CHAIN x${this.absorbCombo}!`).setAlpha(1).setVisible(true);
+        this.milestoneTimer = 2.0;
+        this.sfx.combo(this.absorbCombo);
+        break; // show highest unannounced threshold this frame
+      }
+    }
+  }
+
+  /** Decay combo timer; reset on expiry. Called in update(). */
+  private updateCombo(dt: number) {
+    if (this.absorbComboTimer <= 0) return;
+    this.absorbComboTimer -= dt;
+    if (this.absorbComboTimer <= 0) {
+      this.absorbCombo = 0;
+      this.comboAnnounced.clear();
+    }
+  }
+
   /**
    * PvP collision check: run after local player absorbs dust/asteroids.
    * - If local player overlaps a remote player and is ABSORB_RATIO× larger → absorb them.
@@ -1370,6 +1660,7 @@ export class Main extends Phaser.Scene {
         this.net.sendAbsorbPlayer(rp.id);
         this.sfx.absorb(rp.mass);
         this.absorbFlashTimer = 0.40;
+        this.bumpCombo(10);  // PvP kill is the ultimate skill expression
         this.killStreak++;
         this.killStreakTimer = 4.0;
         this.pvpKillGlowTimer = 2.0 + this.killStreak * 0.5;
@@ -1380,8 +1671,8 @@ export class Main extends Phaser.Scene {
           this.milestoneText.setText(`KILL STREAK ×${this.killStreak}!`).setAlpha(1).setVisible(true);
           this.milestoneTimer = 2.2;
         }
-      } else if (rp.mass >= pm * ABSORB_RATIO && this.spawnProtectTimer <= 0) {
-        // They absorb us: game over (blocked during spawn protection)
+      } else if (rp.mass >= pm * ABSORB_RATIO && this.spawnProtectTimer <= 0 && this.shieldTimer <= 0) {
+        // They absorb us: game over (blocked during spawn protection or active shield)
         this.phase = 'consumed';
         const tag = rp.id.slice(0, 6).toUpperCase();
         this.showEndScreen(false, `ABSORBED BY ${tag}`);
@@ -1437,8 +1728,8 @@ export class Main extends Phaser.Scene {
       }
       if (dustAbsorbed) this.dust = this.dust.filter(d => d.active);
 
-      // Bot absorbs player (blocked during spawn protection)
-      if (bot.mass >= this.player.mass * ABSORB_RATIO && this.spawnProtectTimer <= 0) {
+      // Bot absorbs player (blocked during spawn protection or active shield)
+      if (bot.mass >= this.player.mass * ABSORB_RATIO && this.spawnProtectTimer <= 0 && this.shieldTimer <= 0) {
         const dx = bot.x - this.player.x;
         const dy = bot.y - this.player.y;
         if (dx * dx + dy * dy < (bot.radius + this.player.radius) ** 2) {
@@ -1460,6 +1751,7 @@ export class Main extends Phaser.Scene {
           bot.active = false;
           this.sfx.absorb(bot.mass);
           this.absorbFlashTimer = 0.35;
+          this.bumpCombo(10);  // bot kill = skill
           this.killStreak++;
           this.killStreakTimer = 4.0;
           this.pvpKillGlowTimer = 2.0 + this.killStreak * 0.5;
@@ -1515,7 +1807,13 @@ export class Main extends Phaser.Scene {
 
     if (escaped) {
       this.endText.setText("ESCAPED!").setColor("#00ffaa").setVisible(true);
-      this.sfx.escaped();
+      if (this.player.mass < CLUTCH_MASS_THRESH) {
+        this.sfx.clutchEscape();
+        this.milestoneText.setText("CLUTCH ESCAPE!!").setColor("#ff00ff").setAlpha(1).setVisible(true);
+        this.milestoneTimer = 3.5;
+      } else {
+        this.sfx.escaped();
+      }
     } else {
       const msg = deathMessage ?? "CONSUMED BY THE VOID";
       this.endText.setText(msg).setColor("#ff5500").setVisible(true);
@@ -1528,8 +1826,29 @@ export class Main extends Phaser.Scene {
     const rankStr = total > 1 ? `Rank  #${rank} / ${total}` : "";
     const bestStr = isNewBest ? "NEW HIGH SCORE!" : `Best: ${prevBest.toLocaleString()}`;
 
+    // Economy summary
+    const finalVI   = this.player.mass / MASS_PER_TOKEN;
+    const BONUS_TABLE = [1.50, 1.25, 1.10];
+    const bonusMult = escaped && rank >= 1 && rank <= 3 ? BONUS_TABLE[rank - 1] : 1.0;
+    const boostedVI = finalVI * bonusMult;
+    const rakeVI    = boostedVI * 0.03;
+    const netVI     = boostedVI - rakeVI;
+    const profitVI  = netVI - this.buyInTokens;
+    const netUSD    = netVI * VI_PRICE_USD;
+    const profitUSD = profitVI * VI_PRICE_USD;
+    let economyLine: string;
+    if (escaped) {
+      const bonusTag   = bonusMult > 1 ? `  (×${bonusMult} TOP${rank} BONUS)` : "";
+      const profitSign = profitVI >= 0 ? "+" : "";
+      economyLine = `Payout: $${netUSD.toFixed(2)}  (${profitSign}$${Math.abs(profitUSD).toFixed(2)} ${profitVI >= 0 ? "profit" : "loss"})${bonusTag}`;
+    } else {
+      economyLine = `Stake lost: -$${(this.buyInTokens * VI_PRICE_USD).toFixed(2)}  (-${this.buyInTokens} VI)`;
+    }
+
+    const tierLabel = TIER_INFO[this.playerTier].label;
     const statsLines = [
       `Mass: ${mass.toLocaleString()}   Time: ${timeStr}   Score: ${score.toLocaleString()}`,
+      economyLine,
       rankStr,
       bestStr,
     ].filter(Boolean);
@@ -1539,7 +1858,9 @@ export class Main extends Phaser.Scene {
       .setColor(isNewBest ? "#ffdd00" : "#dddddd")
       .setVisible(true);
 
-    this.restartText.setVisible(true);
+    this.restartText
+      .setText(`[ R ]  Re-stake  ${tierLabel} (${this.buyInTokens} VI = $${(this.buyInTokens * VI_PRICE_USD).toFixed(2)})`)
+      .setVisible(true);
     this.menuKeyText.setVisible(true);
 
     this.input.keyboard!.once("keydown-R", () => {
@@ -1794,6 +2115,23 @@ export class Main extends Phaser.Scene {
       this.gfx.strokeCircle(x, y, radius * 1.2);
     }
 
+    // ── F-key Shield — gold/amber ring while shieldTimer > 0 ────────────
+    if (this.shieldTimer > 0) {
+      const t_sh  = this.time.now / 1000;
+      const fade  = this.shieldTimer / SHIELD_DURATION;   // 1→0 as shield expires
+      const pulse = 0.40 + 0.40 * Math.sin(t_sh * 9);    // faster pulse than spawn ring
+      const alpha = fade * pulse;
+      // Outer amber glow
+      this.gfx.fillStyle(0xffcc00, alpha * 0.12);
+      this.gfx.fillCircle(x, y, radius * 1.85);
+      // Primary gold ring
+      this.gfx.lineStyle(Math.max(2, radius * 0.07), 0xffcc00, alpha);
+      this.gfx.strokeCircle(x, y, radius * 1.55);
+      // Secondary inner ring (dimmer)
+      this.gfx.lineStyle(Math.max(1, radius * 0.03), 0xffe066, alpha * 0.55);
+      this.gfx.strokeCircle(x, y, radius * 1.30);
+    }
+
     // ── Absorption impact flash — white halo burst on absorb ─────────────
     if (this.absorbFlashTimer > 0) {
       const ft = this.absorbFlashTimer / 0.40; // normalise to peak flash duration
@@ -1957,6 +2295,19 @@ export class Main extends Phaser.Scene {
       strokeThickness: 3,
     }).setDepth(20).setOrigin(0.5, 1);
     this.floatLabels.push({ text: label, vy: -55 - Math.random() * 30, life: 1.4, maxLife: 1.4 });
+  }
+
+  /** Spawn a floating text string (non-mass announcements like "GRAVITY ASSIST!"). */
+  private spawnFloatText(x: number, y: number, str: string, color: number = 0x44ffaa) {
+    const hex   = '#' + color.toString(16).padStart(6, '0');
+    const label = this.add.text(x, y, str, {
+      fontSize: '17px',
+      fontFamily: 'monospace',
+      color: hex,
+      stroke: '#000000',
+      strokeThickness: 3,
+    }).setDepth(20).setOrigin(0.5, 1);
+    this.floatLabels.push({ text: label, vy: -48, life: 2.0, maxLife: 2.0 });
   }
 
   /** Update particles, trail, float labels, timers; play BH rumble / heartbeat. */
@@ -2360,12 +2711,14 @@ export class Main extends Phaser.Scene {
 
     entries.sort((a, b) => b.mass - a.mass);
     const top5 = entries.slice(0, 5);
+    const BONUS_MULT = ["×1.5", "×1.25", "×1.1"];
 
     const lines: string[] = ["LEADERBOARD"];
     for (let i = 0; i < top5.length; i++) {
       const e = top5[i];
       const tag = e.isLocal ? `[${e.label}]` : e.label;
-      lines.push(`#${i + 1} ${tag}  ${Math.floor(e.mass)}`);
+      const bonus = i < 3 ? `  ${BONUS_MULT[i]}` : "";
+      lines.push(`#${i + 1} ${tag}  ${Math.floor(e.mass)}${bonus}`);
     }
 
     this.leaderboardText.setText(lines.join("\n"));

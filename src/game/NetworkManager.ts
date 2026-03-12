@@ -4,6 +4,7 @@ import { Client, Room } from "colyseus.js";
 const ADJECTIVES = ["Stellar","Cosmic","Nebula","Solar","Void","Dark","Swift","Silent","Rogue","Quantum"];
 const NOUNS      = ["Drifter","Hunter","Nomad","Ranger","Pilot","Seeker","Wanderer","Scout","Voyager","Exile"];
 const NAME_KEY   = "omnivi_playername";
+const TIER_KEY   = "omnivi_tier";
 
 export function getOrCreatePlayerName(): string {
   const stored = localStorage.getItem(NAME_KEY);
@@ -14,6 +15,22 @@ export function getOrCreatePlayerName(): string {
   localStorage.setItem(NAME_KEY, name);
   return name;
 }
+
+/** Persist tier selection across sessions. Default = 1 (Standard). */
+export function getStoredTier(): number {
+  const v = parseInt(localStorage.getItem(TIER_KEY) ?? "1", 10);
+  return [0, 1, 2].includes(v) ? v : 1;
+}
+export function setStoredTier(tier: number): void {
+  localStorage.setItem(TIER_KEY, String(tier));
+}
+
+/** Human-readable tier labels and VI cost */
+export const TIER_INFO = [
+  { label: "Quick",       viCost: 5,   massPerToken: 40 },
+  { label: "Standard",    viCost: 25,  massPerToken: 40 },
+  { label: "High Roller", viCost: 100, massPerToken: 40 },
+] as const;
 
 // ─── Remote player snapshot (what the server tells us about other players) ───
 export interface RemotePlayer {
@@ -28,6 +45,9 @@ export interface RemotePlayer {
   isThrusting: boolean;
   isEscaping: boolean;
   phase: string;
+  tier: number;
+  buyInMass: number;
+  kills: number;
 }
 
 // ─── Server-authoritative game state ─────────────────────────────────────────
@@ -47,6 +67,16 @@ export interface ClaimReadyPayload {
   finalMass: string;   // BigInt as decimal string (wei)
   nonce: number;
   signature: string;
+  topThreeBonus?: boolean;
+  bonusMultiplier?: number;  // 1.5 / 1.25 / 1.1 for top 3 by mass
+  massRank?: number;         // 1-based rank among non-consumed players
+  killsRank?: number;
+}
+
+export interface KillBountyPayload {
+  victimName: string;
+  victimTier: number;
+  bonusMass: number;
 }
 
 export class NetworkManager {
@@ -64,14 +94,15 @@ export class NetworkManager {
   private _onClaimReady: ((payload: ClaimReadyPayload) => void) | null = null;
   private _onPlayerAdded: ((id: string, rp: RemotePlayer) => void) | null = null;
   private _onPlayerRemoved: ((id: string) => void) | null = null;
+  private _onKillBounty: ((payload: KillBountyPayload) => void) | null = null;
 
   constructor(serverUrl: string = DEFAULT_SERVER_URL) {
     this.client = new Client(serverUrl);
   }
 
   /** Join (or create) the shared "omnivi" room. Non-throwing — failures are logged. */
-  async connect(name: string = "Pilot"): Promise<void> {
-    this.room = await this.client.joinOrCreate<any>("omnivi", { name });
+  async connect(name: string = "Pilot", tier: number = 1): Promise<void> {
+    this.room = await this.client.joinOrCreate<any>("omnivi", { name, tier });
     this._mySessionId = this.room.sessionId;
 
     // Track remote players (skip our own entry)
@@ -108,7 +139,13 @@ export class NetworkManager {
       this._onClaimReady?.(payload);
     });
 
-    console.log(`[Net] Joined room ${this.room.roomId} as ${this._mySessionId}`);
+    // Kill bounty: server notifies victor of bonus mass after absorbing a player
+    this.room.onMessage("kill_bounty", (payload: KillBountyPayload) => {
+      console.log("[Net] Kill bounty:", payload);
+      this._onKillBounty?.(payload);
+    });
+
+    console.log(`[Net] Joined room ${this.room.roomId} as ${this._mySessionId} (tier ${tier})`);
   }
 
   // ── Outbound messages ───────────────────────────────────────────────────────
@@ -135,6 +172,12 @@ export class NetworkManager {
     this.room?.send("escaped", walletAddress ? { walletAddress } : {});
   }
 
+  sendConsumed(): void {
+    this.room?.send("consumed");
+  }
+
+  // ── Callbacks ───────────────────────────────────────────────────────────────
+
   /** Register a callback to receive signed claim data after escaping. */
   onClaimReady(cb: (payload: ClaimReadyPayload) => void): void {
     this._onClaimReady = cb;
@@ -148,8 +191,9 @@ export class NetworkManager {
     this._onPlayerRemoved = cb;
   }
 
-  sendConsumed(): void {
-    this.room?.send("consumed");
+  /** Called when server confirms a kill bounty for this player. */
+  onKillBounty(cb: (payload: KillBountyPayload) => void): void {
+    this._onKillBounty = cb;
   }
 
   // ── Accessors ───────────────────────────────────────────────────────────────
@@ -168,16 +212,19 @@ export class NetworkManager {
 
 function mapPlayer(sessionId: string, p: any): RemotePlayer {
   return {
-    id: sessionId,
-    name: p.name ?? "Pilot",
-    x: p.x,
-    y: p.y,
-    vx: p.vx ?? 0,
-    vy: p.vy ?? 0,
-    mass: p.mass,
-    color: p.color ?? "#ffffff",
+    id:          sessionId,
+    name:        p.name        ?? "Pilot",
+    x:           p.x,
+    y:           p.y,
+    vx:          p.vx          ?? 0,
+    vy:          p.vy          ?? 0,
+    mass:        p.mass,
+    color:       p.color       ?? "#ffffff",
     isThrusting: p.isThrusting ?? false,
-    isEscaping: p.isEscaping ?? false,
-    phase: p.phase ?? "alive",
+    isEscaping:  p.isEscaping  ?? false,
+    phase:       p.phase       ?? "alive",
+    tier:        p.tier        ?? 1,
+    buyInMass:   p.buyInMass   ?? 1000,
+    kills:       p.kills       ?? 0,
   };
 }

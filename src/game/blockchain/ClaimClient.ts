@@ -1,8 +1,9 @@
 import { ethers } from "ethers";
 
-// Minimal ABI — only the claim function we need to call
+// Minimal ABI — only the functions we call client-side
 const GAME_VAULT_ABI = [
   "function claim(uint256 finalAmount, uint256 nonce, bytes calldata signature) external",
+  "function restake(uint256 finalAmount, uint256 nonce, bytes calldata signature, uint8 newTier) external",
 ];
 
 const VAULT_ADDRESS: string =
@@ -43,6 +44,26 @@ export async function submitClaim(payload: ClaimPayload): Promise<string> {
   const vault = new ethers.Contract(VAULT_ADDRESS, GAME_VAULT_ABI, signer);
 
   const tx = await vault.claim(payload.finalMass, payload.nonce, payload.signature);
+  await tx.wait();
+  return tx.hash as string;
+}
+
+/**
+ * Claim winnings AND immediately re-stake for a new round in a single on-chain tx.
+ * Requires the player to have pre-approved the new tier amount to the vault.
+ * Returns the transaction hash on success.
+ */
+export async function submitRestake(payload: ClaimPayload, newTier: number): Promise<string> {
+  if (!VAULT_ADDRESS) throw new Error("VITE_GAME_VAULT_ADDRESS not configured");
+
+  const eth = (window as any).ethereum;
+  if (!eth) throw new Error("MetaMask not found");
+
+  const provider = new ethers.BrowserProvider(eth);
+  const signer = await provider.getSigner();
+  const vault = new ethers.Contract(VAULT_ADDRESS, GAME_VAULT_ABI, signer);
+
+  const tx = await vault.restake(payload.finalMass, payload.nonce, payload.signature, newTier);
   await tx.wait();
   return tx.hash as string;
 }
