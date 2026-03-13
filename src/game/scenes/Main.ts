@@ -33,8 +33,10 @@ const MAX_G_ACCEL = 500;         // px/s² cap (prevents lag-spike explosions)
 // ─── Black Hole / Big Shrink ─────────────────────────────────────────────────
 const SHRINK_START_DELAY = 180;   // seconds of normal play before Big Shrink (3-min rounds)
 const BH_INITIAL_MASS    = 8000;  // starting BH mass (radius ≈ 179px)
-const BH_GROWTH_RATE     = 200;   // mass/second added to BH
+const BH_GROWTH_RATE     = 200;   // mass/second added to BH (initial)
+const BH_GROWTH_ACCEL    = 5.0;   // extra mass/s² — shrink accelerates over time
 const BH_GRAVITY_MULT    = 5.0;   // BH gravity multiplier over GRAVITY_G
+const WARN_SECONDS       = [60, 30, 10] as const; // countdown warnings before shrink
 
 // ─── Escape Sequence ────────────────────────────────────────────────────────
 const ESCAPE_DURATION      = 12;    // seconds to complete escape
@@ -82,6 +84,8 @@ class SfxManager {
   private masterGain: GainNode;
   private thrustOsc: OscillatorNode | null = null;
   private thrustGain: GainNode | null = null;
+  private droneOsc: OscillatorNode | null = null;
+  private droneGain: GainNode | null = null;
 
   constructor() {
     this.ctx = new AudioContext();
@@ -214,6 +218,27 @@ class SfxManager {
     this.tone(440, 'sawtooth', 0.18, 0.12, 110);
   }
 
+  /** Warning countdown alert. urgency: 0=60s, 1=30s, 2=10s */
+  warnCountdown(urgency: number) {
+    void this.ctx.resume();
+    if (urgency === 0) {
+      // 60s: two low-tone alert — heads-up
+      this.tone(220, 'triangle', 0.18, 0.16, 180);
+      this.tone(180, 'sine',     0.22, 0.10, 140, 0.18);
+    } else if (urgency === 1) {
+      // 30s: three-tone rising alarm — get ready
+      this.tone(260, 'triangle', 0.14, 0.18, 200);
+      this.tone(320, 'sine',     0.16, 0.16, 240, 0.14);
+      this.tone(400, 'sine',     0.14, 0.12, 300, 0.28);
+    } else {
+      // 10s: rapid-fire alarm — NOW!
+      for (let i = 0; i < 4; i++) {
+        this.tone(550, 'square', 0.07, 0.18, 550, i * 0.10);
+      }
+      this.tone(660, 'sawtooth', 0.25, 0.28, 220, 0.42);
+    }
+  }
+
   /** Extended fanfare for clutch escape at low mass. */
   clutchEscape() {
     void this.ctx.resume();
@@ -230,8 +255,39 @@ class SfxManager {
     this.tone(base * 1.5,  'sine', 0.10, 0.08, base * 1.5, 0.14);
   }
 
+  /** Start a continuous low-frequency tension drone (call once at round start). */
+  startTensionDrone() {
+    if (this.droneOsc) return;
+    void this.ctx.resume();
+    this.droneOsc = this.ctx.createOscillator();
+    this.droneGain = this.ctx.createGain();
+    this.droneOsc.type = 'sine';
+    this.droneOsc.frequency.value = 40;
+    this.droneGain.gain.value = 0;
+    this.droneOsc.connect(this.droneGain);
+    this.droneGain.connect(this.masterGain);
+    this.droneOsc.start();
+  }
+
+  /** Update tension drone frequency and volume with smooth ramping. */
+  setTensionDrone(freq: number, volume: number) {
+    if (!this.droneOsc || !this.droneGain) return;
+    const t = this.ctx.currentTime;
+    this.droneOsc.frequency.setTargetAtTime(freq, t, 1.5);
+    this.droneGain.gain.setTargetAtTime(volume, t, 1.5);
+  }
+
+  stopTensionDrone() {
+    if (this.droneOsc) {
+      try { this.droneOsc.stop(); } catch { /* already stopped */ }
+      this.droneOsc = null;
+      this.droneGain = null;
+    }
+  }
+
   destroy() {
     if (this.thrustOsc) { try { this.thrustOsc.stop(); } catch { /* already stopped */ } }
+    this.stopTensionDrone();
     void this.ctx.close();
   }
 }
@@ -706,6 +762,14 @@ export class Main extends Phaser.Scene {
   private disruptFlash!: number;    // seconds remaining for disruption red flash
   private spawnProtectTimer!: number; // seconds of invulnerability remaining
 
+  // ── Round pacing / tension curve ──────────────────────────────────────
+  private warningFlash: number = 0;             // seconds of warning screen flash
+  private warningFlashColor: number = 0xff8800; // color of current warning flash
+  private climaxWarningFired: boolean = false;  // one-shot: final 30s climax announcement
+  private warnedAt = new Set<number>();          // WARN_SECONDS values already triggered
+  private roundTimerText!: Phaser.GameObjects.Text;
+  private bhCameraShakeCooldown: number = 0;    // throttle camera shakes during shrink
+
   constructor() {
     super("Main");
   }
@@ -784,6 +848,10 @@ export class Main extends Phaser.Scene {
     this.absorbComboTimer = 0;
     this.bestCombo = 0;
     this.comboAnnounced.clear();
+    this.warningFlash = 0;
+    this.warnedAt = new Set();
+    this.bhCameraShakeCooldown = 0;
+    this.climaxWarningFired = false;
     this.milestoneTimer = 0;
     this.lastMassMilestone = STARTING_MASS;
     for (const lbl of this.nameLabels.values()) lbl.destroy();
@@ -833,6 +901,19 @@ export class Main extends Phaser.Scene {
         stroke: "#000000",
         strokeThickness: 3,
         align: "center",
+      })
+      .setScrollFactor(0)
+      .setDepth(20)
+      .setOrigin(0.5, 0);
+
+    // Round countdown timer — below phaseText, always visible during playing
+    this.roundTimerText = this.add
+      .text(this.scale.width / 2, 38, "", {
+        fontSize: "13px",
+        color: "#888888",
+        stroke: "#000000",
+        strokeThickness: 2,
+        fontFamily: "monospace",
       })
       .setScrollFactor(0)
       .setDepth(20)
@@ -928,6 +1009,7 @@ export class Main extends Phaser.Scene {
     this.scale.on("resize", (gameSize: Phaser.Structs.Size) => {
       const cx = gameSize.width / 2;
       this.phaseText.setX(cx);
+      this.roundTimerText.setX(cx);
       this.endText.setX(cx);
       this.statsText.setX(cx);
       this.restartText.setX(cx);
@@ -1022,6 +1104,7 @@ export class Main extends Phaser.Scene {
 
     // Sound (create after scene is active so AudioContext has a user gesture)
     this.sfx = new SfxManager();
+    this.sfx.startTensionDrone();
     this.events.once('shutdown', () => this.sfx.destroy());
     this.wasThrusting = false;
     this.absorbSfxCooldown = 0;
@@ -1034,6 +1117,19 @@ export class Main extends Phaser.Scene {
 
     // ── Timer & phase transitions ────────────────────────────────────────
     this.gameTimer += dt;
+    if (this.phase === 'playing') {
+      // Fire warning pulses at 60s, 30s, 10s before shrink
+      const remaining = SHRINK_START_DELAY - this.gameTimer;
+      for (let i = 0; i < WARN_SECONDS.length; i++) {
+        const w = WARN_SECONDS[i];
+        if (remaining <= w && !this.warnedAt.has(w)) {
+          this.warnedAt.add(w);
+          this.warningFlash = 0.7 + i * 0.4;                             // 0.7s→1.1s→1.5s
+          this.warningFlashColor = i === 2 ? 0xff2200 : i === 1 ? 0xff6600 : 0xffaa00;
+          this.sfx.warnCountdown(i);
+        }
+      }
+    }
     if (this.phase === 'playing' && this.gameTimer >= SHRINK_START_DELAY) {
       this.phase = 'shrinking';
       this.sfx.bigShrink();
@@ -1393,7 +1489,8 @@ export class Main extends Phaser.Scene {
   // ─── Black Hole Update ─────────────────────────────────────────────────────
   private updateBlackHole(dt: number) {
     this.shrinkTimer += dt;
-    this.bhMass += BH_GROWTH_RATE * dt;
+    // BH growth accelerates: starts at 200 mass/s, ramps up ~3 mass/s² (doubles at ~67s)
+    this.bhMass += (BH_GROWTH_RATE + BH_GROWTH_ACCEL * this.shrinkTimer) * dt;
 
     const bhR  = massToRadius(this.bhMass);
     const bx   = WORLD_SIZE / 2;
@@ -1874,16 +1971,46 @@ export class Main extends Phaser.Scene {
   // ─── Phase HUD ─────────────────────────────────────────────────────────────
   private updatePhaseHUD() {
     if (this.phase === 'playing') {
-      const remaining = SHRINK_START_DELAY - this.gameTimer;
-      if (remaining <= 30) {
+      const remaining = Math.max(0, SHRINK_START_DELAY - this.gameTimer);
+      const mins = Math.floor(remaining / 60);
+      const secs = Math.floor(remaining % 60).toString().padStart(2, '0');
+      const t_now = this.time.now / 1000;
+
+      if (remaining <= 10) {
+        // Final 10s: large blinking red countdown
+        const blink = Math.sin(t_now * 10) > 0;
         this.phaseText
           .setText(`⚠  BIG SHRINK IN  ${remaining.toFixed(0)}s  ⚠`)
-          .setColor("#ff8800");
+          .setColor(blink ? "#ff0000" : "#ff6600")
+          .setFontSize("18px");
+        this.roundTimerText.setText("");
+      } else if (remaining <= 30) {
+        // 30s: orange pulsing warning
+        this.phaseText
+          .setText(`⚠  BIG SHRINK IN  ${remaining.toFixed(0)}s  ⚠`)
+          .setColor("#ff6600")
+          .setFontSize("15px");
+        this.roundTimerText.setText("");
+      } else if (remaining <= 60) {
+        // 60s: amber warning
+        this.phaseText
+          .setText(`BIG SHRINK IN ${remaining.toFixed(0)}s`)
+          .setColor("#ffaa00")
+          .setFontSize("14px");
+        this.roundTimerText.setText("");
       } else {
-        this.phaseText.setText("");
+        // Normal play: subtle timer
+        this.phaseText.setText("").setFontSize("15px");
+        this.roundTimerText
+          .setText(`SHRINK IN  ${mins}:${secs}`)
+          .setColor("#999999")
+          .setFontSize("12px");
       }
       return;
     }
+
+    // Clear round timer during shrink/end
+    this.roundTimerText.setText("");
 
     if (this.phase === 'shrinking') {
       if (this.escaping) {
@@ -2234,6 +2361,26 @@ export class Main extends Phaser.Scene {
     const gw = this.scale.width;
     const gh = this.scale.height;
 
+    // Pre-shrink tension: amber border builds in the last 60s of safe phase
+    if (this.phase === 'playing') {
+      const remaining = SHRINK_START_DELAY - this.gameTimer;
+      if (remaining < 60) {
+        const tensionT = 1 - (remaining / 60);  // 0 at 60s remaining → 1 at shrink
+        const t_now = this.time.now / 1000;
+        const pulse = 0.45 + 0.55 * Math.sin(t_now * (2 + tensionT * 4));
+        const alpha = tensionT * 0.35 * pulse;
+        this.vignetteGfx.lineStyle(12 + tensionT * 28, 0xff6600, alpha);
+        this.vignetteGfx.strokeRect(0, 0, gw, gh);
+      }
+    }
+
+    // Warning flash (amber/orange/red pulse on 60s/30s/10s warnings)
+    if (this.warningFlash > 0) {
+      const alpha = Math.min(0.30, this.warningFlash * 0.40);
+      this.vignetteGfx.fillStyle(this.warningFlashColor, alpha);
+      this.vignetteGfx.fillRect(0, 0, gw, gh);
+    }
+
     // Disruption flash (red) — shown for any disruption/warning
     if (this.disruptFlash > 0) {
       const alpha = Math.min(0.4, this.disruptFlash * 0.33);
@@ -2269,6 +2416,26 @@ export class Main extends Phaser.Scene {
     if (danger > 0) {
       this.vignetteGfx.fillStyle(0x000000, danger * 0.55);
       this.vignetteGfx.fillRect(0, 0, gw, gh);
+    }
+
+    // Shrink pulsing red border — intensifies over time and with shrinkTimer
+    const shrinkProgress = Math.min(1, this.shrinkTimer / 90); // 0..1 over 90s
+    const t_shrink = this.time.now / 1000;
+    const shrinkPulse = 0.45 + 0.55 * Math.sin(t_shrink * (3 + shrinkProgress * 5));
+    const shrinkBorderAlpha = (0.12 + shrinkProgress * 0.55) * shrinkPulse;
+    this.vignetteGfx.lineStyle(6 + shrinkProgress * 22, 0xff2200, shrinkBorderAlpha);
+    this.vignetteGfx.strokeRect(0, 0, gw, gh);
+
+    // Final stretch (shrinkTimer >= 60): rapid red flicker overlay + bright outer border
+    if (this.shrinkTimer >= 60) {
+      const finalT     = Math.min(1, (this.shrinkTimer - 60) / 30); // 0..1 over 30s
+      const rapidPulse = 0.5 + 0.5 * Math.sin(t_shrink * (8 + finalT * 12)); // 8→20 Hz pulse
+      // Screen-fill red tint that intensifies toward end
+      this.vignetteGfx.fillStyle(0xff0000, finalT * 0.20 * rapidPulse);
+      this.vignetteGfx.fillRect(0, 0, gw, gh);
+      // Extra bright border on top of the base shrink border
+      this.vignetteGfx.lineStyle(4 + finalT * 10, 0xff4400, 0.6 + finalT * 0.35);
+      this.vignetteGfx.strokeRect(2, 2, gw - 4, gh - 4);
     }
   }
 
@@ -2340,6 +2507,9 @@ export class Main extends Phaser.Scene {
     // Kill glow decay
     if (this.pvpKillGlowTimer > 0) this.pvpKillGlowTimer = Math.max(0, this.pvpKillGlowTimer - dt);
 
+    // Warning flash decay
+    if (this.warningFlash > 0) this.warningFlash = Math.max(0, this.warningFlash - dt);
+
     // Absorption flash decay
     if (this.absorbFlashTimer > 0) this.absorbFlashTimer = Math.max(0, this.absorbFlashTimer - dt);
 
@@ -2368,6 +2538,37 @@ export class Main extends Phaser.Scene {
           this.bhRumbleCooldown = 0.55;
         }
       }
+
+      // BH camera shake — escalates as shrinkTimer grows (every 5s → every 1.5s)
+      this.bhCameraShakeCooldown = Math.max(0, this.bhCameraShakeCooldown - dt);
+      if (this.bhCameraShakeCooldown <= 0) {
+        const shrinkP = Math.min(1, this.shrinkTimer / 90);
+        const shakeInterval = Math.max(1.5, 5.0 - shrinkP * 3.5); // 5s → 1.5s
+        const shakeIntensity = 0.003 + shrinkP * 0.013;            // 0.003 → 0.016
+        this.cameras.main.shake(180, shakeIntensity);
+        this.bhCameraShakeCooldown = shakeInterval;
+      }
+
+      // One-shot climax announcement when shrink has been running 60s
+      if (!this.climaxWarningFired && this.shrinkTimer >= 60) {
+        this.climaxWarningFired = true;
+        this.warningFlash      = 2.0;
+        this.warningFlashColor = 0xff0000;
+        this.spawnFloatText(this.player.x, this.player.y - this.player.radius * 2,
+          '⚠  FINAL STRETCH  ⚠', 0xff2200);
+        this.sfx.warnCountdown(2); // red urgency beep
+      }
+    }
+
+    // Tension drone: ramps from silence to ambient during play, peaks during shrink
+    if (this.phase === 'playing') {
+      const pp  = this.gameTimer / SHRINK_START_DELAY;   // 0..1
+      this.sfx.setTensionDrone(35 + pp * 25, pp * pp * 0.06);
+    } else if (this.phase === 'shrinking') {
+      const sp = Math.min(1, this.shrinkTimer / 90);
+      this.sfx.setTensionDrone(60 + sp * 80, 0.06 + sp * 0.16);
+    } else {
+      this.sfx.setTensionDrone(35, 0);
     }
 
     // Heartbeat when mass drops below 80% of starting mass
