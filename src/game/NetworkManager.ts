@@ -168,6 +168,24 @@ export class NetworkManager {
     this.room?.send("absorb_player", { victimId });
   }
 
+  /**
+   * Notify server of a mass absorption event so it can update its authoritative mass.
+   * kind: 'dust' | 'asteroid' | 'bot'
+   * gained: mass absorbed (must be > 0)
+   */
+  sendAbsorb(kind: "dust" | "asteroid" | "bot", gained: number): void {
+    if (!this.room || gained <= 0) return;
+    this.room.send("absorb", { kind, gained });
+  }
+
+  /**
+   * Notify server that we activated an ability so it can deduct mass server-side.
+   * Server recomputes the actual cost from its own mass value.
+   */
+  sendUseAbility(type: "boost" | "shield" | "eject"): void {
+    this.room?.send("use_ability", { type });
+  }
+
   sendEscaped(walletAddress?: string): void {
     this.room?.send("escaped", walletAddress ? { walletAddress } : {});
   }

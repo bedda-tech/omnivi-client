@@ -695,6 +695,7 @@ export class Main extends Phaser.Scene {
         const dy = d.y - py;
         if (dx * dx + dy * dy < (pr + d.radius) * (pr + d.radius)) {
           this.player.mass += d.mass;
+          this.net?.sendAbsorb("dust", d.mass);
           d.active = false;
           absorbed = true;
           this.bumpCombo(1);
@@ -728,6 +729,7 @@ export class Main extends Phaser.Scene {
           this.player.vx = (this.player.vx * this.player.mass + a.vx * a.mass) / tm;
           this.player.vy = (this.player.vy * this.player.mass + a.vy * a.mass) / tm;
           this.player.mass = tm;
+          this.net?.sendAbsorb("asteroid", a.mass);
           a.active = false;
           absorbed = true;
           this.bumpCombo(3);   // asteroid absorptions are rarer and more skillful
@@ -995,6 +997,7 @@ export class Main extends Phaser.Scene {
       if (this.boostCooldown <= 0 && this.player.mass > 100) {
         const massCost = Math.max(15, this.player.mass * BOOST_MASS_COST_PCT);
         this.player.mass = Math.max(15, this.player.mass - massCost);
+        this.net?.sendUseAbility("boost");
         const cos = Math.cos(this.player.rotation);
         const sin = Math.sin(this.player.rotation);
         this.player.vx += cos * BOOST_IMPULSE;
@@ -1015,6 +1018,7 @@ export class Main extends Phaser.Scene {
           EJECT_MASS_MAX,
         );
         this.player.mass = Math.max(15, this.player.mass - ejMass);
+        this.net?.sendUseAbility("eject");
 
         // Recoil: push player back (momentum conservation, capped)
         const cos = Math.cos(this.player.rotation);
@@ -1051,6 +1055,7 @@ export class Main extends Phaser.Scene {
       if (this.shieldCooldown <= 0 && this.player.mass > 80) {
         const massCost = Math.max(10, this.player.mass * SHIELD_MASS_COST_PCT);
         this.player.mass = Math.max(15, this.player.mass - massCost);
+        this.net?.sendUseAbility("shield");
         this.shieldTimer    = SHIELD_DURATION;
         this.shieldCooldown = SHIELD_COOLDOWN;
         this.sfx.shield();
@@ -1207,6 +1212,7 @@ export class Main extends Phaser.Scene {
           this.player.vx = (this.player.vx * this.player.mass + bot.vx * bot.mass) / tm;
           this.player.vy = (this.player.vy * this.player.mass + bot.vy * bot.mass) / tm;
           this.player.mass = tm;
+          this.net?.sendAbsorb("bot", bot.mass);
           bot.active = false;
           this.sfx.absorb(bot.mass);
           this.absorbFlashTimer = 0.35;
