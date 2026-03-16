@@ -1,5 +1,5 @@
 import {
-  massToRadius, WORLD_SIZE, DRAG, THRUST_MASS_COST,
+  massToRadius, WORLD_SIZE, DRAG, THRUST_MASS_COST_PCT,
   ABSORB_RATIO, BOT_THRUST, BOT_MAX_SPEED, BOT_DETECT_RANGE,
 } from "../constants";
 import type { DustParticle } from "./DustParticle";
@@ -106,7 +106,7 @@ export class BotPlayer {
         this.vx = (this.vx / speed) * BOT_MAX_SPEED;
         this.vy = (this.vy / speed) * BOT_MAX_SPEED;
       }
-      this.mass = Math.max(15, this.mass - THRUST_MASS_COST);
+      this.mass = Math.max(15, this.mass - this.mass * THRUST_MASS_COST_PCT);
     }
     const dragFactor = Math.pow(DRAG, dt * 60);
     this.vx *= dragFactor;

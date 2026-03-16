@@ -1,6 +1,6 @@
 import {
   massToRadius, WORLD_SIZE, DRAG, MAX_SPEED,
-  THRUST_FORCE, THRUST_MASS_COST, DUST_EMIT_MASS, STARTING_MASS,
+  THRUST_FORCE, THRUST_MASS_COST_PCT, DUST_EMIT_MASS, STARTING_MASS,
 } from "../constants";
 
 export class Player {
@@ -44,8 +44,8 @@ export class Player {
       this.vy = (this.vy / speed) * MAX_SPEED;
     }
 
-    // Expel mass as dust from the back of the player (proportional to size)
-    const massLost = Math.max(THRUST_MASS_COST, this.mass * 0.001);
+    // Expel mass as dust from the back of the player — proportional to size so cost is fair at all scales
+    const massLost = this.mass * THRUST_MASS_COST_PCT;
     this.mass = Math.max(15, this.mass - massLost);
 
     const ejectSpeed = 150;

@@ -3,10 +3,10 @@ export const WORLD_SIZE = 5000;
 export const RADIUS_SCALE = 2.0;        // radius = sqrt(mass) * RADIUS_SCALE
 export const STARTING_MASS = 1000;
 export const THRUST_FORCE = 250;        // pixels/s² acceleration
-export const THRUST_MASS_COST = 0.8;    // mass lost per thrust tick (60fps assumed)
+export const THRUST_MASS_COST_PCT = 0.001; // fraction of mass lost per thrust tick (0.1%/tick = ~6%/sec regardless of size)
 export const DRAG = 0.992;              // velocity multiplier per frame
 export const MAX_SPEED = 500;
-export const DUST_EMIT_MASS = 0.3;      // mass of each emitted dust particle (must be < THRUST_MASS_COST)
+export const DUST_EMIT_MASS = 0.3;      // mass of each emitted dust particle
 export const INITIAL_DUST_COUNT = 300;  // dust seeded at match start
 export const MAX_DUST = 600;
 export const ABSORB_RATIO = 1.5;        // must be this times larger to absorb
