@@ -498,6 +498,8 @@ export class Main extends Phaser.Scene {
     // Sound (create after scene is active so AudioContext has a user gesture)
     this.sfx = new SfxManager();
     this.sfx.startTensionDrone();
+    this.sfx.startMusic();
+    this.sfx.roundStart();
     this.events.once('shutdown', () => this.sfx.destroy());
     this.wasThrusting = false;
     this.absorbSfxCooldown = 0;
@@ -614,9 +616,13 @@ export class Main extends Phaser.Scene {
       }
     }
 
-    // Thrust sound: start on press, stop on release
+    // Thrust sound: start on press, stop on release; vary pitch with speed
     if (thrusting && !this.wasThrusting) this.sfx.startThrust();
     else if (!thrusting && this.wasThrusting) this.sfx.stopThrust();
+    if (thrusting) {
+      const speed = Math.hypot(this.player.vx, this.player.vy);
+      this.sfx.updateThrustPitch(speed);
+    }
     this.wasThrusting = thrusting;
 
     // ── Update player ──────────────────────────────────────────────────
@@ -1990,16 +1996,20 @@ export class Main extends Phaser.Scene {
       }
     }
 
-    // Tension drone: ramps from silence to ambient during play, peaks during shrink
+    // Tension drone + dynamic music: ramp from silence → peak during shrink
+    let musicIntensity = 0;
     if (this.phase === 'playing') {
       const pp  = this.gameTimer / SHRINK_START_DELAY;   // 0..1
       this.sfx.setTensionDrone(35 + pp * 25, pp * pp * 0.06);
+      musicIntensity = pp * 0.55; // 0 → 0.55 during playing phase
     } else if (this.phase === 'shrinking') {
       const sp = Math.min(1, this.shrinkTimer / 90);
       this.sfx.setTensionDrone(60 + sp * 80, 0.06 + sp * 0.16);
+      musicIntensity = 0.55 + sp * 0.45; // 0.55 → 1.0 during shrink
     } else {
       this.sfx.setTensionDrone(35, 0);
     }
+    this.sfx.updateMusic(musicIntensity);
 
     // Heartbeat when mass drops below 80% of starting mass
     if (this.phase === 'playing' || this.phase === 'shrinking') {
