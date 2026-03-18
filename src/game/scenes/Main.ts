@@ -21,6 +21,12 @@ import {
   type BurstParticle, type TrailPoint, type FloatLabel,
 } from "../entities";
 
+interface KillFeedEntry {
+  msg: string;
+  life: number;   // seconds remaining
+  color: number;  // 0xRRGGBB
+}
+
 // ─── Main Scene ────────────────────────────────────────────────────────────
 export class Main extends Phaser.Scene {
   private player!: Player;
@@ -68,6 +74,12 @@ export class Main extends Phaser.Scene {
   private net: NetworkManager | null = null;
   private sendTimer: number = 0;    // seconds since last network send
   private readonly SEND_RATE = 1 / 20; // 20 Hz
+  /**
+   * Server-authoritative mass received from the last Colyseus state broadcast.
+   * 0 = no server correction received yet (playing offline or first tick).
+   * Used to detect and correct client/server mass drift caused by anti-cheat clamping.
+   */
+  private serverMass: number = 0;
   /** Session IDs we've already absorbed this life — prevents double-counting. */
   private absorbedPlayers = new Set<string>();
   /** World-space name labels for remote players, keyed by session ID. */
@@ -80,6 +92,15 @@ export class Main extends Phaser.Scene {
   private playerTier: number = 1;
   /** VI tokens staked this session (buy-in reference for loss-aversion HUD). */
   private buyInTokens: number = 25;
+  /** Pre-connected NetworkManager passed in from Lobby scene (if joining via lobby). */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- reserved for future lobby handoff
+  declare private _initNet: NetworkManager | null;
+  /** True after player died but round still ongoing — watching other players. */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- future spectator mode
+  declare private _spectatorMode: boolean;
+  /** Spectator overlay text elements */
+  declare private _spectatorText: Phaser.GameObjects.Text;
+  declare private _roundResultsOverlay: Phaser.GameObjects.Graphics;
 
   // ── Sound ────────────────────────────────────────────────────────────────
   private sfx!: SfxManager;
@@ -107,6 +128,10 @@ export class Main extends Phaser.Scene {
   private shieldCooldown: number = 0; // seconds until shield is usable again
 
   private slingshotCooldown: number = 0; // prevents spam gravity-assist label
+
+  // ── Kill feed ────────────────────────────────────────────────────────
+  private killFeedEntries: KillFeedEntry[] = [];
+  private killFeedTexts: Phaser.GameObjects.Text[] = [];
 
   // ── Absorption combo ─────────────────────────────────────────────────
   private absorbCombo: number = 0;                     // current combo count
@@ -190,6 +215,7 @@ export class Main extends Phaser.Scene {
     this.escapeTimer    = 0;
     this.disruptFlash        = 0;
     this.spawnProtectTimer   = SPAWN_PROTECT_SECS;
+    this.serverMass          = 0;
     this.absorbedPlayers.clear();
     // Juice reset (Phaser destroys text objects on scene restart, so just clear arrays)
     this.particles = [];
@@ -446,6 +472,11 @@ export class Main extends Phaser.Scene {
       window.dispatchEvent(new CustomEvent("omnivi:claim_ready", { detail: payload }));
     });
 
+    // Server mass corrections: if the server clamped our mass (anti-cheat), snap local to match
+    this.net?.onSelfMassUpdate((mass) => {
+      this.serverMass = mass;
+    });
+
     // Kill bounty: apply bonus mass and show floating label
     this.net?.onKillBounty((payload) => {
       // Apply the bonus mass to the player (server already credited it server-side)
@@ -470,6 +501,21 @@ export class Main extends Phaser.Scene {
     this.events.once('shutdown', () => this.sfx.destroy());
     this.wasThrusting = false;
     this.absorbSfxCooldown = 0;
+
+    // Kill feed — pre-allocate 5 text objects, bottom-left corner
+    this.killFeedEntries = [];
+    this.killFeedTexts = [];
+    for (let i = 0; i < 5; i++) {
+      this.killFeedTexts.push(
+        this.add.text(16, 0, "", {
+          fontSize: "13px",
+          fontFamily: "monospace",
+          color: "#00ff88",
+          stroke: "#000000",
+          strokeThickness: 2,
+        }).setScrollFactor(0).setDepth(21).setVisible(false)
+      );
+    }
 
     EventBus.emit("current-scene-ready", this);
   }
@@ -764,6 +810,18 @@ export class Main extends Phaser.Scene {
     // ── Juice: particles, float labels, sounds ──────────────────────────
     this.updateJuice(dt);
 
+    // ── Server mass reconciliation ─────────────────────────────────────
+    // If the server clamped our mass (anti-cheat) and the drift exceeds 5%, snap local
+    // mass to server value. This prevents the client from displaying inflated mass
+    // and ensures the local physics stays consistent with server authority.
+    if (this.serverMass > 0 && (this.phase === "playing" || this.phase === "shrinking")) {
+      const drift = Math.abs(this.player.mass - this.serverMass) / this.serverMass;
+      if (drift > 0.05) {
+        console.warn(`[AntiCheat] Mass drift ${(drift * 100).toFixed(1)}%: local=${this.player.mass.toFixed(0)} server=${this.serverMass.toFixed(0)} — correcting`);
+        this.player.mass = this.serverMass;
+      }
+    }
+
     // ── Network: send local player state at 20 Hz ──────────────────────
     this.sendTimer += dt;
     if (this.net && this.sendTimer >= this.SEND_RATE) {
@@ -771,7 +829,6 @@ export class Main extends Phaser.Scene {
       this.net.sendPlayerState(
         this.player.x, this.player.y,
         this.player.vx, this.player.vy,
-        this.player.mass,
         thrusting,
         this.escaping,
       );
@@ -848,6 +905,7 @@ export class Main extends Phaser.Scene {
     this.drawScene(dt);
     this.drawMinimap();
     this.drawLeaderboard();
+    this.drawKillFeed(dt);
   }
 
   // ─── Black Hole Update ─────────────────────────────────────────────────────
@@ -1131,6 +1189,8 @@ export class Main extends Phaser.Scene {
         this.cameras.main.shake(350, 0.015); // big shake for eating a player
         this.spawnBurst(rp.x, rp.y, 50, 220, 0xffdd00, 1.3);
         this.spawnFloatLabel(rp.x, rp.y, rp.mass, 0xffdd00);
+        const tag = rp.id.slice(0, 6).toUpperCase();
+        this.pushKillFeed(`YOU absorbed ${tag}`, 0xffdd00);
         if (this.killStreak >= 2) {
           this.milestoneText.setText(`KILL STREAK ×${this.killStreak}!`).setAlpha(1).setVisible(true);
           this.milestoneTimer = 2.2;
@@ -1139,6 +1199,7 @@ export class Main extends Phaser.Scene {
         // They absorb us: game over (blocked during spawn protection or active shield)
         this.phase = 'consumed';
         const tag = rp.id.slice(0, 6).toUpperCase();
+        this.pushKillFeed(`${tag} absorbed YOU`, 0xff5500);
         this.showEndScreen(false, `ABSORBED BY ${tag}`);
         break;
       }
@@ -1223,6 +1284,7 @@ export class Main extends Phaser.Scene {
           this.cameras.main.shake(350, 0.015);
           this.spawnBurst(bot.x, bot.y, 40, 190, 0xff7700, 1.1);
           this.spawnFloatLabel(bot.x, bot.y, bot.mass, 0xff7700);
+          this.pushKillFeed(`YOU absorbed ${bot.name}`, 0xff9900);
           if (this.killStreak >= 2) {
             this.milestoneText.setText(`KILL STREAK ×${this.killStreak}!`).setAlpha(1).setVisible(true);
             this.milestoneTimer = 2.2;
@@ -2197,6 +2259,35 @@ export class Main extends Phaser.Scene {
   }
 
   // ─── Minimap ───────────────────────────────────────────────────────────────
+  // ─── Kill Feed ─────────────────────────────────────────────────────────────
+  private pushKillFeed(msg: string, color: number = 0x00ff88) {
+    this.killFeedEntries.unshift({ msg, life: 5.0, color });
+    if (this.killFeedEntries.length > 5) this.killFeedEntries.pop();
+  }
+
+  private drawKillFeed(dt: number) {
+    // Decay all entries
+    for (const e of this.killFeedEntries) e.life -= dt;
+    this.killFeedEntries = this.killFeedEntries.filter(e => e.life > 0);
+
+    const baseY = this.scale.height - 90;
+    for (let i = 0; i < this.killFeedTexts.length; i++) {
+      const entry = this.killFeedEntries[i];
+      const txt   = this.killFeedTexts[i];
+      if (!entry) { txt.setVisible(false); continue; }
+      const alpha = entry.life < 1.5 ? entry.life / 1.5 : 1.0;
+      const r = (entry.color >> 16) & 0xff;
+      const g = (entry.color >>  8) & 0xff;
+      const b =  entry.color        & 0xff;
+      const hex = `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
+      txt.setText(entry.msg)
+         .setColor(hex)
+         .setAlpha(alpha)
+         .setY(baseY - i * 20)
+         .setVisible(true);
+    }
+  }
+
   private drawMinimap() {
     const gw = this.scale.width;
     const gh = this.scale.height;
