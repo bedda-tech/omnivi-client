@@ -9,7 +9,7 @@ import {
   LobbyState,
 } from "../NetworkManager";
 
-const VI_PRICE_USD = 0.05;
+// Mass IS VI — no dollar conversion
 const ELO_KEY = "omnivi_elo";
 
 function getStoredElo(): number {
@@ -172,8 +172,7 @@ export class Lobby extends Scene {
 
     this.tierBtns = TIER_INFO.map((info, i) => {
       const bx = cx + (i - 1) * tierSpacing;
-      const usd = (info.viCost * VI_PRICE_USD).toFixed(2);
-      const label = `${info.label}\n${info.viCost} VI\n$${usd}`;
+      const label = `${info.label}\n${info.viCost} VI`;
       const btn = this.add.text(bx, tierY, label, {
         fontFamily: '"Arial Black", Gadget, sans-serif',
         fontSize: "12px",
@@ -277,7 +276,10 @@ export class Lobby extends Scene {
       this.countdownText.setVisible(false);
 
       this.time.delayedCall(400, () => {
-        this.scene.start("Main", { net: this.net, tier: this.selectedTier });
+        // Disconnect lobby connection — Main will open its own fresh connection
+        this.net?.disconnect();
+        this.net = null;
+        this.scene.start("Main", { tier: this.selectedTier });
       });
     });
 
@@ -359,10 +361,8 @@ export class Lobby extends Scene {
     });
 
     const info = TIER_INFO[index];
-    const usd = (info.viCost * VI_PRICE_USD).toFixed(2);
-    const massStart = info.viCost * info.massPerToken;
     this.tierDescText
-      .setText(`start mass ${massStart}  ·  ${info.viCost} VI ($${usd})  ·  top-3 earns up to ×1.5`)
+      .setText(`start ${info.viCost} VI  ·  top-3 earns up to x1.5`)
       .setColor(TIER_COLORS_S[index]);
   }
 

@@ -1,7 +1,9 @@
 import { Boot } from "./scenes/Boot";
 import { GameOver } from "./scenes/GameOver";
+import { Lobby } from "./scenes/Lobby";
 import { Main } from "./scenes/Main";
 import { MainMenu } from "./scenes/MainMenu";
+import { RoundResults } from "./scenes/RoundResults";
 import { AUTO, Game } from "phaser";
 import { Preloader } from "./scenes/Preloader";
 
@@ -13,7 +15,7 @@ const config: Phaser.Types.Core.GameConfig = {
   height: 768,
   parent: "game-container",
   backgroundColor: "#000000",
-  scene: [Boot, Preloader, MainMenu, Main, GameOver],
+  scene: [Boot, Preloader, MainMenu, Lobby, Main, RoundResults, GameOver],
   input: {
     gamepad: true,
   },

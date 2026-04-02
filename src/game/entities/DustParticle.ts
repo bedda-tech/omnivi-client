@@ -26,8 +26,7 @@ export class DustParticle {
   update(dt: number) {
     this.x += this.vx * dt;
     this.y += this.vy * dt;
-    this.vx *= 0.999;
-    this.vy *= 0.999;
+    // No drag in space — dust drifts freely
     // Soft bounce at world edges
     if (this.x < 0) { this.x = 0; this.vx = Math.abs(this.vx); }
     if (this.x > WORLD_SIZE) { this.x = WORLD_SIZE; this.vx = -Math.abs(this.vx); }

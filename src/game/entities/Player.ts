@@ -1,5 +1,5 @@
 import {
-  massToRadius, WORLD_SIZE, DRAG, MAX_SPEED,
+  massToRadius, WORLD_SIZE, MAX_SPEED,
   THRUST_FORCE, THRUST_MASS_COST_PCT, DUST_EMIT_MASS, STARTING_MASS,
 } from "../constants";
 
@@ -59,19 +59,15 @@ export class Player {
   }
 
   update(dt: number) {
-    // Apply drag
-    const dragFactor = Math.pow(DRAG, dt * 60);
-    this.vx *= dragFactor;
-    this.vy *= dragFactor;
-
+    // No drag in space — momentum is conserved
     this.x += this.vx * dt;
     this.y += this.vy * dt;
 
-    // World boundary bounce
+    // World boundary bounce (elastic, no energy loss)
     const r = this.radius;
-    if (this.x < r) { this.x = r; this.vx = Math.abs(this.vx) * 0.5; }
-    if (this.x > WORLD_SIZE - r) { this.x = WORLD_SIZE - r; this.vx = -Math.abs(this.vx) * 0.5; }
-    if (this.y < r) { this.y = r; this.vy = Math.abs(this.vy) * 0.5; }
-    if (this.y > WORLD_SIZE - r) { this.y = WORLD_SIZE - r; this.vy = -Math.abs(this.vy) * 0.5; }
+    if (this.x < r) { this.x = r; this.vx = Math.abs(this.vx); }
+    if (this.x > WORLD_SIZE - r) { this.x = WORLD_SIZE - r; this.vx = -Math.abs(this.vx); }
+    if (this.y < r) { this.y = r; this.vy = Math.abs(this.vy); }
+    if (this.y > WORLD_SIZE - r) { this.y = WORLD_SIZE - r; this.vy = -Math.abs(this.vy); }
   }
 }

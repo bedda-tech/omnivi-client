@@ -1,21 +1,24 @@
 import Phaser from "phaser";
 import { EventBus } from "../EventBus";
-import { NetworkManager, getOrCreatePlayerName, getStoredTier, TIER_INFO } from "../NetworkManager";
+import { NetworkManager, getOrCreatePlayerName, getStoredTier, TIER_INFO, deductBuyIn, creditPayout, getViBalance } from "../NetworkManager";
 import { connectWallet } from "../blockchain/ClaimClient";
 import {
   WORLD_SIZE, STARTING_MASS, MAX_SPEED, DUST_EMIT_MASS, INITIAL_DUST_COUNT, MAX_DUST, ABSORB_RATIO,
-  DUST_RESPAWN_MIN, ASTEROID_THRESHOLD, PLANET_THRESHOLD, INITIAL_ASTEROIDS, ASTEROID_VERTICES,
+  ASTEROID_THRESHOLD, PLANET_THRESHOLD, INITIAL_ASTEROIDS, ASTEROID_VERTICES,
   GRAVITY_G, GRAVITY_THETA, GRAVITY_MIN_DIST_SQ,
   MAX_G_ACCEL, SHRINK_START_DELAY, BH_INITIAL_MASS, BH_GROWTH_RATE, BH_GROWTH_ACCEL,
   BH_GRAVITY_MULT, WARN_SECONDS, ESCAPE_DURATION, ESCAPE_MIN_DIST, ESCAPE_DISRUPT_RATIO,
   SPAWN_PROTECT_SECS, BOOST_MASS_COST_PCT, BOOST_IMPULSE, BOOST_COOLDOWN, EJECT_MASS_PCT,
   EJECT_MASS_MIN, EJECT_MASS_MAX, EJECT_SPEED, EJECT_COOLDOWN, CLUTCH_MASS_THRESH,
   SHIELD_MASS_COST_PCT, SHIELD_DURATION, SHIELD_COOLDOWN, COMBO_TIMEOUT,
-  COMBO_ANNOUNCE_THRESHOLDS, MASS_PER_TOKEN, VI_PRICE_USD, BOT_COUNT, BOT_NAMES,
+  COMBO_ANNOUNCE_THRESHOLDS, BOT_COUNT, BOT_NAMES,
   BOT_COLORS, massToRadius, parseHslColor,
+  COLLISION_RESTITUTION, FRAGMENT_KE_THRESHOLD, FRAGMENT_MASS_PCT, FRAGMENT_COUNT,
+  COLLISION_SEPARATION,
   type GamePhase,
 } from "../constants";
 import { SfxManager } from "../managers/SfxManager";
+import { PhysicsManager } from "../managers/PhysicsManager";
 import {
   DustParticle, Asteroid, QuadNode, Player, BotPlayer,
   type BurstParticle, type TrailPoint, type FloatLabel,
@@ -91,7 +94,7 @@ export class Main extends Phaser.Scene {
   /** Entry tier this session (0=Quick, 1=Standard, 2=HighRoller). */
   private playerTier: number = 1;
   /** VI tokens staked this session (buy-in reference for loss-aversion HUD). */
-  private buyInTokens: number = 25;
+  private buyInTokens: number = 1000;
   /** Pre-connected NetworkManager passed in from Lobby scene (if joining via lobby). */
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- reserved for future lobby handoff
   declare private _initNet: NetworkManager | null;
@@ -117,6 +120,8 @@ export class Main extends Phaser.Scene {
   private absorbFlashTimer: number = 0;   // white impact flash on player after absorbing
   private killStreak: number = 0;         // consecutive kills before dying
   private killStreakTimer: number = 0;    // decay timer — resets streak after inactivity
+  private pvpKills: number = 0;          // total kills this round (players + bots)
+  declare private _roundResultsPlaceholder: unknown; // reserved
   private milestoneText!: Phaser.GameObjects.Text;  // center-screen mass milestone pop
   private milestoneTimer: number = 0;    // how long to display the milestone label
   private lastMassMilestone: number = 0; // last mass threshold announced
@@ -227,6 +232,7 @@ export class Main extends Phaser.Scene {
     this.absorbFlashTimer = 0;
     this.killStreak = 0;
     this.killStreakTimer = 0;
+    this.pvpKills = 0;
     this.boostCooldown = 0;
     this.ejectCooldown = 0;
     this.shieldTimer = 0;
@@ -456,6 +462,7 @@ export class Main extends Phaser.Scene {
     // ── Network: connect to Colyseus server (graceful if offline) ─────
     this.playerTier    = getStoredTier();
     this.buyInTokens   = TIER_INFO[this.playerTier].viCost;
+    deductBuyIn(this.playerTier);
 
     this.net = new NetworkManager();
     this.net.onPlayerRemoved((id) => {
@@ -639,12 +646,13 @@ export class Main extends Phaser.Scene {
       const pm = this.player.mass;
 
       // Dust: gravity from other dust (Barnes-Hut) + player gravity + asteroid gravity
+      // Pure Newtonian: F = G * M / r² — no special zones, no amplification
       for (const d of this.dust) {
         let [ax, ay] = this.dust.length > 0
           ? tree.accelAt(d.x, d.y, d, GRAVITY_THETA)
           : [0, 0];
 
-        // Player as dominant gravity well
+        // Player gravity well
         {
           const dx = px - d.x;
           const dy = py - d.y;
@@ -655,7 +663,7 @@ export class Main extends Phaser.Scene {
           ay += pa * dy / dist;
         }
 
-        // Each asteroid is also a gravity well for dust
+        // Asteroid gravity wells
         for (const a of this.asteroids) {
           const dx = a.x - d.x;
           const dy = a.y - d.y;
@@ -714,6 +722,68 @@ export class Main extends Phaser.Scene {
         this.slingshotCooldown = 6.0;
         this.spawnFloatText(this.player.x, this.player.y - this.player.radius - 10, "GRAVITY ASSIST!", 0x44ffaa);
       }
+
+      // ── Player ↔ Bot gravity (mutual, Newton's 3rd law) ──────────────
+      for (const bot of this.bots) {
+        if (!bot.active) continue;
+        const dx = bot.x - px;
+        const dy = bot.y - py;
+        const dSq = Math.max(dx * dx + dy * dy, GRAVITY_MIN_DIST_SQ);
+        const dist = Math.sqrt(dSq);
+        const f = GRAVITY_G / dSq / dist; // pre-divided by dist for unit vector
+        // Player pulled toward bot
+        let pax = bot.mass * f * dx;
+        let pay = bot.mass * f * dy;
+        let pmag = Math.hypot(pax, pay);
+        if (pmag > MAX_G_ACCEL) { pax = pax / pmag * MAX_G_ACCEL; pay = pay / pmag * MAX_G_ACCEL; }
+        this.player.vx += pax * dt;
+        this.player.vy += pay * dt;
+        // Bot pulled toward player (Newton's 3rd)
+        let bax = -pm * f * dx;
+        let bay = -pm * f * dy;
+        let bmag = Math.hypot(bax, bay);
+        if (bmag > MAX_G_ACCEL) { bax = bax / bmag * MAX_G_ACCEL; bay = bay / bmag * MAX_G_ACCEL; }
+        bot.vx += bax * dt;
+        bot.vy += bay * dt;
+      }
+
+      // ── Player ↔ Remote player gravity (mutual) ──────────────────────
+      if (this.net) {
+        for (const [, rp] of this.net.otherPlayers) {
+          if (rp.phase !== 'alive') continue;
+          const dx = rp.x - px;
+          const dy = rp.y - py;
+          const dSq = Math.max(dx * dx + dy * dy, GRAVITY_MIN_DIST_SQ);
+          const dist = Math.sqrt(dSq);
+          const f = GRAVITY_G / dSq / dist;
+          let gax = rp.mass * f * dx;
+          let gay = rp.mass * f * dy;
+          const gmag = Math.hypot(gax, gay);
+          if (gmag > MAX_G_ACCEL) { gax = gax / gmag * MAX_G_ACCEL; gay = gay / gmag * MAX_G_ACCEL; }
+          this.player.vx += gax * dt;
+          this.player.vy += gay * dt;
+          // Note: remote player's gravity response is handled by their own client
+        }
+      }
+
+      // ── Bot ↔ Bot gravity ────────────────────────────────────────────
+      for (let i = 0; i < this.bots.length; i++) {
+        const ba = this.bots[i];
+        if (!ba.active) continue;
+        for (let j = i + 1; j < this.bots.length; j++) {
+          const bb = this.bots[j];
+          if (!bb.active) continue;
+          const dx = bb.x - ba.x;
+          const dy = bb.y - ba.y;
+          const dSq = Math.max(dx * dx + dy * dy, GRAVITY_MIN_DIST_SQ);
+          const dist = Math.sqrt(dSq);
+          const f = GRAVITY_G / dSq / dist;
+          ba.vx += bb.mass * f * dx * dt;
+          ba.vy += bb.mass * f * dy * dt;
+          bb.vx -= ba.mass * f * dx * dt;
+          bb.vy -= ba.mass * f * dy * dt;
+        }
+      }
     }
 
     // ── Update positions ───────────────────────────────────────────────
@@ -721,18 +791,22 @@ export class Main extends Phaser.Scene {
     for (const a of this.asteroids) a.update(dt);
 
     // ── Dust-to-dust merging ────────────────────────────────────────────
-    this.mergeDust();
+    this.dust = PhysicsManager.mergeDust(this.dust);
 
     // ── Promote large dust → Asteroid ──────────────────────────────────
-    this.promoteDust();
+    ({ dust: this.dust, asteroids: this.asteroids } = PhysicsManager.promoteDust(this.dust, this.asteroids));
 
     // ── Asteroid absorbs nearby dust ───────────────────────────────────
-    this.asteroidAbsorbsDust();
+    this.dust = PhysicsManager.asteroidAbsorbsDust(this.dust, this.asteroids);
 
     // ── Asteroids merge with each other (planet formation) ─────────────
-    this.mergeAsteroids();
+    {
+      const { asteroids: merged, debris: astDebris } = PhysicsManager.mergeAsteroids(this.asteroids);
+      this.asteroids = merged;
+      if (astDebris.length > 0) this.spawnCollisionDebris(astDebris);
+    }
 
-    // ── Player absorbs dust ────────────────────────────────────────────
+    // ── Player absorbs dust (contact only) ──────────────────────────
     {
       const pr = this.player.radius;
       const px = this.player.x;
@@ -751,7 +825,6 @@ export class Main extends Phaser.Scene {
           d.active = false;
           absorbed = true;
           this.bumpCombo(1);
-          // Brief white flash on player for every absorption
           this.absorbFlashTimer = Math.max(this.absorbFlashTimer, 0.10);
           if (this.absorbSfxCooldown <= 0) {
             this.sfx.absorb(d.mass);
@@ -764,7 +837,7 @@ export class Main extends Phaser.Scene {
       if (absorbed) this.dust = this.dust.filter(d => d.active);
     }
 
-    // ── Player absorbs asteroids ────────────────────────────────────────
+    // ── Player ↔ Asteroids: absorb, or elastic collision ────────────────
     {
       const pr = this.player.radius;
       const px = this.player.x;
@@ -772,11 +845,12 @@ export class Main extends Phaser.Scene {
       let absorbed = false;
       for (const a of this.asteroids) {
         if (!a.active) continue;
-        if (this.player.mass < a.mass * ABSORB_RATIO) continue;
         const dx = a.x - px;
         const dy = a.y - py;
-        if (dx * dx + dy * dy < (pr + a.radius) * (pr + a.radius)) {
-          // Momentum conservation: the player is absorbing a moving body
+        if (dx * dx + dy * dy >= (pr + a.radius) * (pr + a.radius)) continue;
+
+        if (this.player.mass >= a.mass * ABSORB_RATIO) {
+          // Absorb: player is big enough
           const tm = this.player.mass + a.mass;
           this.player.vx = (this.player.vx * this.player.mass + a.vx * a.mass) / tm;
           this.player.vy = (this.player.vy * this.player.mass + a.vy * a.mass) / tm;
@@ -784,14 +858,34 @@ export class Main extends Phaser.Scene {
           this.net?.sendAbsorb("asteroid", a.mass);
           a.active = false;
           absorbed = true;
-          this.bumpCombo(3);   // asteroid absorptions are rarer and more skillful
+          this.bumpCombo(3);
           this.sfx.absorb(a.mass);
           this.absorbFlashTimer = 0.25;
           this.spawnBurst(a.x, a.y, Math.min(30, 8 + Math.floor(a.mass / 20)), 130, 0xffaa44, 0.9);
           this.spawnFloatLabel(a.x, a.y, a.mass, 0xffaa44);
-          // Screen shake proportional to asteroid mass
           const shakeMag = Math.min(0.004 + a.mass / 50000, 0.012);
           this.cameras.main.shake(220, shakeMag);
+        } else if (a.mass >= this.player.mass * ABSORB_RATIO && this.spawnProtectTimer <= 0 && this.shieldTimer <= 0) {
+          // Asteroid absorbs player (it's a planet-sized body)
+          this.phase = 'consumed';
+          this.showEndScreen(false, `CRUSHED BY ASTEROID`);
+          return;
+        } else {
+          // Similar size: elastic collision with asteroid
+          const pBody = { x: this.player.x, y: this.player.y, vx: this.player.vx, vy: this.player.vy, mass: this.player.mass, radius: pr };
+          const aBody = { x: a.x, y: a.y, vx: a.vx, vy: a.vy, mass: a.mass, radius: a.radius };
+          const debris = this.resolveElasticCollision(pBody, aBody);
+          this.player.x = pBody.x; this.player.y = pBody.y;
+          this.player.vx = pBody.vx; this.player.vy = pBody.vy;
+          this.player.mass = pBody.mass;
+          a.x = aBody.x; a.y = aBody.y;
+          a.vx = aBody.vx; a.vy = aBody.vy;
+          a.mass = aBody.mass;
+          if (debris.length > 0) {
+            this.spawnCollisionDebris(debris);
+            this.cameras.main.shake(180, 0.006);
+            this.spawnBurst((this.player.x + a.x) / 2, (this.player.y + a.y) / 2, 10, 90, 0xffaa44, 0.5);
+          }
         }
       }
       if (absorbed) this.asteroids = this.asteroids.filter(a => a.active);
@@ -847,14 +941,14 @@ export class Main extends Phaser.Scene {
     this.cameras.main.setZoom(newZoom);
     this.cameras.main.centerOn(this.player.x, this.player.y);
 
-    // ── Mass milestones — announce doubling events ───────────────────────
+    // ── VI milestones ───────────────────────────────────────────────────
     {
       const milestones = [2000, 5000, 10000, 25000, 50000, 100000];
       for (const m of milestones) {
         if (this.player.mass >= m && this.lastMassMilestone < m) {
           this.lastMassMilestone = m;
           const mult = Math.round(m / STARTING_MASS);
-          const label = mult >= 2 ? `${mult}× MASS!` : `${Math.floor(m)} MASS!`;
+          const label = mult >= 2 ? `${mult}× VI!` : `${Math.floor(m)} VI!`;
           this.milestoneText.setText(label).setAlpha(1).setVisible(true);
           this.milestoneTimer = 2.5;
           this.spawnBurst(this.player.x, this.player.y, 25, 140, 0xffdd00, 1.2);
@@ -864,41 +958,36 @@ export class Main extends Phaser.Scene {
     }
 
     // ── HUD ─────────────────────────────────────────────────────────────
-    const speed = Math.hypot(this.player.vx, this.player.vy);
-    const planetCount = this.asteroids.filter(a => a.mass >= PLANET_THRESHOLD).length;
-    const asteroidCount = this.asteroids.length - planetCount;
-    const currentVI    = this.player.mass / MASS_PER_TOKEN;
-    const deltaVI      = currentVI - this.buyInTokens;
-    const currentUSD   = currentVI * VI_PRICE_USD;
-    const deltaUSD     = deltaVI * VI_PRICE_USD;
-    const deltaUSDStr  = deltaUSD >= 0 ? `+$${deltaUSD.toFixed(2)}` : `-$${Math.abs(deltaUSD).toFixed(2)}`;
-    const tierLabel    = TIER_INFO[this.playerTier].label;
-    const losing       = deltaVI < 0;
+    const vi = Math.floor(this.player.mass);
+    const deltaVI = vi - this.buyInTokens;
+    const deltaStr = deltaVI >= 0 ? `+${deltaVI}` : `${deltaVI}`;
+    const tierLabel = TIER_INFO[this.playerTier].label;
+    const losing = deltaVI < 0;
+
+    // Estimate current rank among alive players for payout preview
+    const aliveMasses: number[] = [this.player.mass];
+    if (this.net) {
+      for (const [, rp] of this.net.otherPlayers) {
+        if (rp.phase === "alive") aliveMasses.push(rp.mass);
+      }
+    }
+    for (const bot of this.bots) {
+      if (bot.active) aliveMasses.push(bot.mass);
+    }
+    aliveMasses.sort((a, b) => b - a);
+    const myRank = aliveMasses.indexOf(this.player.mass) + 1;
+    const RANK_MULTS = [1.50, 1.25, 1.10];
+    const myMult = myRank <= 3 ? RANK_MULTS[myRank - 1] : 1.0;
+    const estimatedPayout = Math.floor(vi * myMult * 0.95);
+    const prizePool = this.net ? Math.floor(this.net.gameState.prizePool) : this.buyInTokens;
+
     const hudLines = [
-      `$${currentUSD.toFixed(2)}  (${deltaUSDStr})  [${tierLabel} ${this.buyInTokens}VI = $${(this.buyInTokens * VI_PRICE_USD).toFixed(2)}]`,
-      `Mass:     ${Math.floor(this.player.mass)}`,
-      `Radius:   ${this.player.radius.toFixed(1)} px`,
-      `Speed:    ${speed.toFixed(0)} px/s`,
-      `Dust:     ${this.dust.length}`,
-      `Asteroids:${asteroidCount}  Planets: ${planetCount}`,
-      `Pos:      (${Math.floor(this.player.x)}, ${Math.floor(this.player.y)})`,
+      `${vi} VI  (${deltaStr})  [${tierLabel}  ${this.buyInTokens} VI]`,
+      `Payout: ~${estimatedPayout} VI   rank #${myRank}`,
+      `Pool:    ${prizePool} VI staked`,
     ];
     if (this.spawnProtectTimer > 0) {
       hudLines.push(`SHIELD:   ${this.spawnProtectTimer.toFixed(1)}s`);
-    }
-    const boostReady  = this.boostCooldown <= 0;
-    const ejectReady  = this.ejectCooldown <= 0;
-    const shieldReady = this.shieldCooldown <= 0;
-    const shieldHUD   = this.shieldTimer > 0
-      ? `ACTIVE ${this.shieldTimer.toFixed(1)}s`
-      : shieldReady ? "READY" : this.shieldCooldown.toFixed(1) + "s";
-    hudLines.push(
-      `[SHIFT] Boost: ${boostReady ? "READY" : this.boostCooldown.toFixed(1) + "s"}   ` +
-      `[Q] Eject: ${ejectReady ? "READY" : this.ejectCooldown.toFixed(1) + "s"}   ` +
-      `[F] Shield: ${shieldHUD}`,
-    );
-    if (this.absorbCombo > 1) {
-      hudLines.push(`COMBO ×${this.absorbCombo}  (resets in ${this.absorbComboTimer.toFixed(1)}s)`);
     }
     // Loss aversion: turn HUD red when below buy-in, green when profiting
     this.massText.setColor(losing ? "#ff3333" : deltaVI > 0 ? "#00ff88" : "#ffffff");
@@ -1042,9 +1131,12 @@ export class Main extends Phaser.Scene {
 
   // ─── Skill Abilities: Boost + Mass Eject + Shield ──────────────────────────
   private updateSkills(dt: number) {
+    this.slingshotCooldown = Math.max(0, this.slingshotCooldown - dt);
+    // Abilities disabled for simplicity — just thrust, gravity, and collisions
+    return;
+
     this.boostCooldown    = Math.max(0, this.boostCooldown - dt);
     this.ejectCooldown    = Math.max(0, this.ejectCooldown - dt);
-    this.slingshotCooldown = Math.max(0, this.slingshotCooldown - dt);
 
     // Tick down shield and cooldown
     if (this.shieldTimer > 0) {
@@ -1154,10 +1246,107 @@ export class Main extends Phaser.Scene {
     }
   }
 
+  // ─── Collision Physics ─────────────────────────────────────────────────────
+
+  /**
+   * Resolve an elastic collision between two circular bodies.
+   * Applies impulse-based separation, bounce, and optional fragmentation.
+   * Modifies a and b positions/velocities in place.
+   * Returns debris particles to spawn (empty if no fragmentation).
+   */
+  private resolveElasticCollision(
+    a: { x: number; y: number; vx: number; vy: number; mass: number; radius: number },
+    b: { x: number; y: number; vx: number; vy: number; mass: number; radius: number },
+  ): { x: number; y: number; vx: number; vy: number; mass: number }[] {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 0.001) return []; // degenerate overlap
+
+    // Collision normal (a -> b)
+    const nx = dx / dist;
+    const ny = dy / dist;
+
+    // Separate overlapping bodies (proportional to inverse mass)
+    const overlap = (a.radius + b.radius) - dist;
+    if (overlap > 0) {
+      const totalInvMass = 1 / a.mass + 1 / b.mass;
+      const sepA = (overlap * COLLISION_SEPARATION) * (1 / a.mass) / totalInvMass;
+      const sepB = (overlap * COLLISION_SEPARATION) * (1 / b.mass) / totalInvMass;
+      a.x -= nx * sepA;
+      a.y -= ny * sepA;
+      b.x += nx * sepB;
+      b.y += ny * sepB;
+    }
+
+    // Relative velocity along collision normal
+    const dvx = a.vx - b.vx;
+    const dvy = a.vy - b.vy;
+    const vRelN = dvx * nx + dvy * ny;
+
+    // Only resolve if bodies are approaching
+    if (vRelN <= 0) return [];
+
+    // Impulse magnitude (restitution-based)
+    const e = COLLISION_RESTITUTION;
+    const j = (1 + e) * vRelN / (1 / a.mass + 1 / b.mass);
+
+    // Apply impulse
+    a.vx -= (j / a.mass) * nx;
+    a.vy -= (j / a.mass) * ny;
+    b.vx += (j / b.mass) * nx;
+    b.vy += (j / b.mass) * ny;
+
+    // Fragmentation check: high-energy collisions break off pieces
+    const debris: { x: number; y: number; vx: number; vy: number; mass: number }[] = [];
+    const reducedMass = (a.mass * b.mass) / (a.mass + b.mass);
+    const impactKE = 0.5 * reducedMass * vRelN * vRelN;
+
+    if (impactKE > FRAGMENT_KE_THRESHOLD) {
+      // Energy scale factor: more energy = more mass shed (up to FRAGMENT_MASS_PCT)
+      const energyScale = Math.min(1, impactKE / (FRAGMENT_KE_THRESHOLD * 5));
+      const contactX = a.x + nx * a.radius;
+      const contactY = a.y + ny * a.radius;
+
+      for (const body of [a, b]) {
+        if (body.mass < 30) continue; // too small to fragment
+        const shedMass = body.mass * FRAGMENT_MASS_PCT * energyScale;
+        const perPiece = shedMass / FRAGMENT_COUNT;
+        if (perPiece < 1) continue;
+        body.mass -= shedMass;
+
+        for (let k = 0; k < FRAGMENT_COUNT; k++) {
+          // Spray debris outward from contact point with random spread
+          const angle = Math.atan2(body.y - contactY, body.x - contactX) + (Math.random() - 0.5) * Math.PI;
+          const speed = 80 + Math.random() * 200 * energyScale;
+          debris.push({
+            x: contactX + Math.cos(angle) * (body.radius * 0.3),
+            y: contactY + Math.sin(angle) * (body.radius * 0.3),
+            vx: body.vx + Math.cos(angle) * speed,
+            vy: body.vy + Math.sin(angle) * speed,
+            mass: perPiece,
+          });
+        }
+      }
+    }
+
+    return debris;
+  }
+
+  /** Spawn debris from a collision as dust particles or asteroids. */
+  private spawnCollisionDebris(debris: { x: number; y: number; vx: number; vy: number; mass: number }[]) {
+    for (const d of debris) {
+      if (this.dust.length >= MAX_DUST) break;
+      const particle = new DustParticle(d.x, d.y, d.vx, d.vy, d.mass);
+      this.dust.push(particle);
+    }
+  }
+
   /**
    * PvP collision check: run after local player absorbs dust/asteroids.
    * - If local player overlaps a remote player and is ABSORB_RATIO× larger → absorb them.
    * - If a remote player overlaps local and is ABSORB_RATIO× larger → we die.
+   * - Otherwise → elastic collision (bounce, fragment).
    */
   private checkPvP() {
     if (!this.net) return;
@@ -1190,6 +1379,7 @@ export class Main extends Phaser.Scene {
         this.absorbFlashTimer = 0.40;
         this.bumpCombo(10);  // PvP kill is the ultimate skill expression
         this.killStreak++;
+        this.pvpKills++;
         this.killStreakTimer = 4.0;
         this.pvpKillGlowTimer = 2.0 + this.killStreak * 0.5;
         this.cameras.main.shake(350, 0.015); // big shake for eating a player
@@ -1208,6 +1398,26 @@ export class Main extends Phaser.Scene {
         this.pushKillFeed(`${tag} absorbed YOU`, 0xff5500);
         this.showEndScreen(false, `ABSORBED BY ${tag}`);
         break;
+      } else {
+        // Similar size: elastic collision — bounce off each other
+        // We can only modify local player; create a proxy for the remote body
+        const rpProxy = { x: rp.x, y: rp.y, vx: rp.vx, vy: rp.vy, mass: rp.mass, radius: rr };
+        const localBody = { x: this.player.x, y: this.player.y, vx: this.player.vx, vy: this.player.vy, mass: this.player.mass, radius: pr };
+        const debris = this.resolveElasticCollision(localBody, rpProxy);
+        // Apply local player changes (remote player's response is handled by their client)
+        this.player.x = localBody.x;
+        this.player.y = localBody.y;
+        this.player.vx = localBody.vx;
+        this.player.vy = localBody.vy;
+        this.player.mass = localBody.mass;
+        if (debris.length > 0) {
+          this.spawnCollisionDebris(debris);
+          this.cameras.main.shake(200, 0.008);
+          this.spawnBurst(
+            (this.player.x + rp.x) / 2, (this.player.y + rp.y) / 2,
+            15, 120, 0xff8844, 0.6,
+          );
+        }
       }
     }
   }
@@ -1219,7 +1429,7 @@ export class Main extends Phaser.Scene {
     for (const bot of this.bots) {
       if (!bot.active) continue;
 
-      bot.updateAI(dt, this.player, this.dust);
+      bot.updateAI(dt, this.player, this.dust, this.phase, WORLD_SIZE / 2, WORLD_SIZE / 2, this.bhMass, this.bots);
       bot.updatePhysics(dt);
 
       // BH gravity + consumption during shrink phase
@@ -1241,7 +1451,7 @@ export class Main extends Phaser.Scene {
         if (dist < bhR + bot.radius) { bot.active = false; continue; }
       }
 
-      // Bot absorbs dust (momentum-conserving)
+      // Bot absorbs dust (contact only)
       let dustAbsorbed = false;
       for (const d of this.dust) {
         if (!d.active) continue;
@@ -1259,42 +1469,92 @@ export class Main extends Phaser.Scene {
       }
       if (dustAbsorbed) this.dust = this.dust.filter(d => d.active);
 
-      // Bot absorbs player (blocked during spawn protection or active shield)
-      if (bot.mass >= this.player.mass * ABSORB_RATIO && this.spawnProtectTimer <= 0 && this.shieldTimer <= 0) {
+      // Player ↔ Bot collision
+      {
         const dx = bot.x - this.player.x;
         const dy = bot.y - this.player.y;
-        if (dx * dx + dy * dy < (bot.radius + this.player.radius) ** 2) {
-          this.phase = 'consumed';
-          this.showEndScreen(false, `ABSORBED BY ${bot.name}`);
-          return;
+        const distSq = dx * dx + dy * dy;
+        const touchDist = this.player.radius + bot.radius;
+        if (distSq < touchDist * touchDist) {
+          if (bot.mass >= this.player.mass * ABSORB_RATIO && this.spawnProtectTimer <= 0 && this.shieldTimer <= 0) {
+            // Bot absorbs player
+            this.phase = 'consumed';
+            this.showEndScreen(false, `ABSORBED BY ${bot.name}`);
+            return;
+          } else if (this.player.mass >= bot.mass * ABSORB_RATIO) {
+            // Player absorbs bot
+            const tm = this.player.mass + bot.mass;
+            this.player.vx = (this.player.vx * this.player.mass + bot.vx * bot.mass) / tm;
+            this.player.vy = (this.player.vy * this.player.mass + bot.vy * bot.mass) / tm;
+            this.player.mass = tm;
+            this.net?.sendAbsorb("bot", bot.mass);
+            bot.active = false;
+            this.sfx.absorb(bot.mass);
+            this.absorbFlashTimer = 0.35;
+            this.bumpCombo(10);
+            this.killStreak++;
+            this.pvpKills++;
+            this.killStreakTimer = 4.0;
+            this.pvpKillGlowTimer = 2.0 + this.killStreak * 0.5;
+            this.cameras.main.shake(350, 0.015);
+            this.spawnBurst(bot.x, bot.y, 40, 190, 0xff7700, 1.1);
+            this.spawnFloatLabel(bot.x, bot.y, bot.mass, 0xff7700);
+            this.pushKillFeed(`YOU absorbed ${bot.name}`, 0xff9900);
+            if (this.killStreak >= 2) {
+              this.milestoneText.setText(`KILL STREAK ×${this.killStreak}!`).setAlpha(1).setVisible(true);
+              this.milestoneTimer = 2.2;
+            }
+          } else {
+            // Similar size: elastic collision
+            const pBody = { x: this.player.x, y: this.player.y, vx: this.player.vx, vy: this.player.vy, mass: this.player.mass, radius: this.player.radius };
+            const bBody = { x: bot.x, y: bot.y, vx: bot.vx, vy: bot.vy, mass: bot.mass, radius: bot.radius };
+            const debris = this.resolveElasticCollision(pBody, bBody);
+            this.player.x = pBody.x; this.player.y = pBody.y;
+            this.player.vx = pBody.vx; this.player.vy = pBody.vy;
+            this.player.mass = pBody.mass;
+            bot.x = bBody.x; bot.y = bBody.y;
+            bot.vx = bBody.vx; bot.vy = bBody.vy;
+            bot.mass = bBody.mass;
+            if (debris.length > 0) {
+              this.spawnCollisionDebris(debris);
+              this.cameras.main.shake(180, 0.006);
+              this.spawnBurst((this.player.x + bot.x) / 2, (this.player.y + bot.y) / 2, 12, 100, 0xff8844, 0.5);
+            }
+          }
         }
       }
 
-      // Player absorbs bot
-      if (this.player.mass >= bot.mass * ABSORB_RATIO) {
-        const dx = bot.x - this.player.x;
-        const dy = bot.y - this.player.y;
-        if (dx * dx + dy * dy < (this.player.radius + bot.radius) ** 2) {
-          const tm = this.player.mass + bot.mass;
-          this.player.vx = (this.player.vx * this.player.mass + bot.vx * bot.mass) / tm;
-          this.player.vy = (this.player.vy * this.player.mass + bot.vy * bot.mass) / tm;
-          this.player.mass = tm;
-          this.net?.sendAbsorb("bot", bot.mass);
+      // Bot ↔ Bot collision
+      for (const other of this.bots) {
+        if (!other.active || other === bot) continue;
+        const dx = other.x - bot.x;
+        const dy = other.y - bot.y;
+        const distSq = dx * dx + dy * dy;
+        const touchDist = bot.radius + other.radius;
+        if (distSq >= touchDist * touchDist) continue;
+        if (bot.mass >= other.mass * ABSORB_RATIO) {
+          // bot absorbs other
+          const tm = bot.mass + other.mass;
+          bot.vx = (bot.vx * bot.mass + other.vx * other.mass) / tm;
+          bot.vy = (bot.vy * bot.mass + other.vy * other.mass) / tm;
+          bot.mass = tm;
+          other.active = false;
+        } else if (other.mass >= bot.mass * ABSORB_RATIO) {
+          // other absorbs bot
+          const tm = other.mass + bot.mass;
+          other.vx = (other.vx * other.mass + bot.vx * bot.mass) / tm;
+          other.vy = (other.vy * other.mass + bot.vy * bot.mass) / tm;
+          other.mass = tm;
           bot.active = false;
-          this.sfx.absorb(bot.mass);
-          this.absorbFlashTimer = 0.35;
-          this.bumpCombo(10);  // bot kill = skill
-          this.killStreak++;
-          this.killStreakTimer = 4.0;
-          this.pvpKillGlowTimer = 2.0 + this.killStreak * 0.5;
-          this.cameras.main.shake(350, 0.015);
-          this.spawnBurst(bot.x, bot.y, 40, 190, 0xff7700, 1.1);
-          this.spawnFloatLabel(bot.x, bot.y, bot.mass, 0xff7700);
-          this.pushKillFeed(`YOU absorbed ${bot.name}`, 0xff9900);
-          if (this.killStreak >= 2) {
-            this.milestoneText.setText(`KILL STREAK ×${this.killStreak}!`).setAlpha(1).setVisible(true);
-            this.milestoneTimer = 2.2;
-          }
+          break;
+        } else {
+          // Similar size: elastic collision between bots
+          const bA = { x: bot.x, y: bot.y, vx: bot.vx, vy: bot.vy, mass: bot.mass, radius: bot.radius };
+          const bB = { x: other.x, y: other.y, vx: other.vx, vy: other.vy, mass: other.mass, radius: other.radius };
+          const debris = this.resolveElasticCollision(bA, bB);
+          bot.x = bA.x; bot.y = bA.y; bot.vx = bA.vx; bot.vy = bA.vy; bot.mass = bA.mass;
+          other.x = bB.x; other.y = bB.y; other.vx = bB.vx; other.vy = bB.vy; other.mass = bB.mass;
+          if (debris.length > 0) this.spawnCollisionDebris(debris);
         }
       }
     }
@@ -1303,9 +1563,7 @@ export class Main extends Phaser.Scene {
   }
 
   private showEndScreen(escaped: boolean, deathMessage?: string) {
-    const mass = Math.floor(this.player.mass);
     const timeSurvived = Math.floor(this.gameTimer);
-    const score = Math.floor(mass * (1 + this.gameTimer / 60));
 
     // Compute rank among all players (local + alive remotes + alive bots)
     const allMasses: number[] = [this.player.mass];
@@ -1320,16 +1578,6 @@ export class Main extends Phaser.Scene {
     allMasses.sort((a, b) => b - a);
     const rank = allMasses.indexOf(this.player.mass) + 1;
     const total = allMasses.length;
-
-    // High score (localStorage)
-    const HS_KEY = "omnivi_highscore";
-    const prevBest = parseInt(localStorage.getItem(HS_KEY) ?? "0", 10);
-    const isNewBest = score > prevBest;
-    if (isNewBest) {
-      localStorage.setItem(HS_KEY, String(score));
-      // Delay jingle slightly so it plays after the escaped/death sound settles
-      setTimeout(() => this.sfx.newHighScore(), escaped ? 800 : 1600);
-    }
 
     // Semi-transparent dark overlay
     const gw = this.scale.width;
@@ -1356,43 +1604,39 @@ export class Main extends Phaser.Scene {
     const mins = Math.floor(timeSurvived / 60);
     const secs = timeSurvived % 60;
     const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
-    const rankStr = total > 1 ? `Rank  #${rank} / ${total}` : "";
-    const bestStr = isNewBest ? "NEW HIGH SCORE!" : `Best: ${prevBest.toLocaleString()}`;
+    const rankStr = total > 1 ? `#${rank} / ${total}` : "";
 
-    // Economy summary
-    const finalVI   = this.player.mass / MASS_PER_TOKEN;
-    const BONUS_TABLE = [1.50, 1.25, 1.10];
+    // Economy: apply top-3 bonus and rake, then credit/debit VI balance
+    const BONUS_TABLE = [1.50, 1.25, 1.10] as const;
     const bonusMult = escaped && rank >= 1 && rank <= 3 ? BONUS_TABLE[rank - 1] : 1.0;
-    const boostedVI = finalVI * bonusMult;
-    const rakeVI    = boostedVI * 0.03;
-    const netVI     = boostedVI - rakeVI;
-    const profitVI  = netVI - this.buyInTokens;
-    const netUSD    = netVI * VI_PRICE_USD;
-    const profitUSD = profitVI * VI_PRICE_USD;
-    let economyLine: string;
+    const finalVI   = Math.floor(this.player.mass);
+    const netVI     = escaped ? Math.floor(finalVI * bonusMult * 0.97) : 0;
+    if (escaped) creditPayout(netVI);
+    const newBalance = getViBalance();
+    const deltaVI = escaped ? netVI - this.buyInTokens : -this.buyInTokens;
+    const deltaSign = deltaVI >= 0 ? "+" : "";
+
+    let escaped_line: string;
     if (escaped) {
-      const bonusTag   = bonusMult > 1 ? `  (×${bonusMult} TOP${rank} BONUS)` : "";
-      const profitSign = profitVI >= 0 ? "+" : "";
-      economyLine = `Payout: $${netUSD.toFixed(2)}  (${profitSign}$${Math.abs(profitUSD).toFixed(2)} ${profitVI >= 0 ? "profit" : "loss"})${bonusTag}`;
+      const bonusStr = bonusMult > 1.0 ? `  ×${bonusMult} rank-bonus` : "";
+      escaped_line = `Payout: ${netVI} VI  (${deltaSign}${deltaVI})${bonusStr}`;
     } else {
-      economyLine = `Stake lost: -$${(this.buyInTokens * VI_PRICE_USD).toFixed(2)}  (-${this.buyInTokens} VI)`;
+      escaped_line = `Stake lost: -${this.buyInTokens} VI`;
     }
 
-    const tierLabel = TIER_INFO[this.playerTier].label;
     const statsLines = [
-      `Mass: ${mass.toLocaleString()}   Time: ${timeStr}   Score: ${score.toLocaleString()}`,
-      economyLine,
-      rankStr,
-      bestStr,
+      escaped_line,
+      `Time: ${timeStr}   ${rankStr}`,
+      `Wallet: ${newBalance.toLocaleString()} VI`,
     ].filter(Boolean);
 
     this.statsText
       .setText(statsLines.join("\n"))
-      .setColor(isNewBest ? "#ffdd00" : "#dddddd")
+      .setColor(deltaVI >= 0 ? "#00ff88" : "#ff3333")
       .setVisible(true);
 
     this.restartText
-      .setText(`[ R ]  Re-stake  ${tierLabel} (${this.buyInTokens} VI = $${(this.buyInTokens * VI_PRICE_USD).toFixed(2)})`)
+      .setText(`[ R ]  Re-stake  ${TIER_INFO[this.playerTier].label} (${this.buyInTokens} VI)`)
       .setVisible(true);
     this.menuKeyText.setVisible(true);
 
@@ -1476,134 +1720,6 @@ export class Main extends Phaser.Scene {
     }
   }
 
-  // ─── Spatial-grid dust merging ─────────────────────────────────────────────
-  private mergeDust() {
-    const CELL = 40; // grid cell size — covers max small-dust diameter well
-    const grid = new Map<number, DustParticle[]>();
-    const cellKey = (cx: number, cy: number) => cx * 10000 + cy;
-    const cellOf = (v: number) => Math.floor(v / CELL);
-
-    for (const d of this.dust) {
-      const key = cellKey(cellOf(d.x), cellOf(d.y));
-      if (!grid.has(key)) grid.set(key, []);
-      grid.get(key)!.push(d);
-    }
-
-    let anyMerged = false;
-    for (const d of this.dust) {
-      if (!d.active) continue;
-      const cx = cellOf(d.x);
-      const cy = cellOf(d.y);
-      for (let nx = cx - 1; nx <= cx + 1; nx++) {
-        for (let ny = cy - 1; ny <= cy + 1; ny++) {
-          const bucket = grid.get(cellKey(nx, ny));
-          if (!bucket) continue;
-          for (const other of bucket) {
-            if (other === d || !other.active) continue;
-            const dx = other.x - d.x;
-            const dy = other.y - d.y;
-            const minDist = d.radius + other.radius;
-            if (dx * dx + dy * dy < minDist * minDist) {
-              // Larger absorbs smaller; ties go to d
-              const bigger = d.mass >= other.mass ? d : other;
-              const smaller = bigger === d ? other : d;
-              const totalMass = bigger.mass + smaller.mass;
-              bigger.vx = (bigger.vx * bigger.mass + smaller.vx * smaller.mass) / totalMass;
-              bigger.vy = (bigger.vy * bigger.mass + smaller.vy * smaller.mass) / totalMass;
-              bigger.x = (bigger.x * bigger.mass + smaller.x * smaller.mass) / totalMass;
-              bigger.y = (bigger.y * bigger.mass + smaller.y * smaller.mass) / totalMass;
-              bigger.mass = totalMass;
-              smaller.active = false;
-              anyMerged = true;
-            }
-          }
-        }
-      }
-    }
-
-    if (anyMerged) {
-      this.dust = this.dust.filter(d => d.active);
-    }
-
-    // Respawn sparse ambient dust so the world stays populated
-    while (this.dust.length < DUST_RESPAWN_MIN) {
-      const x = Math.random() * WORLD_SIZE;
-      const y = Math.random() * WORLD_SIZE;
-      const mass = DUST_EMIT_MASS + Math.random() * 6;
-      const speed = Math.random() * 20;
-      const angle = Math.random() * Math.PI * 2;
-      this.dust.push(new DustParticle(x, y, Math.cos(angle) * speed, Math.sin(angle) * speed, mass));
-    }
-  }
-
-  /** Graduate dust particles that have grown past the asteroid threshold. */
-  private promoteDust() {
-    const toPromote: DustParticle[] = [];
-    this.dust = this.dust.filter(d => {
-      if (d.mass >= ASTEROID_THRESHOLD) {
-        toPromote.push(d);
-        return false;
-      }
-      return true;
-    });
-    for (const d of toPromote) {
-      this.asteroids.push(new Asteroid(d.x, d.y, d.vx, d.vy, d.mass));
-    }
-  }
-
-  /** Each asteroid vacuums up overlapping dust via momentum-conserving absorption. */
-  private asteroidAbsorbsDust() {
-    let anyConsumed = false;
-    for (const a of this.asteroids) {
-      const ar = a.radius;
-      for (const d of this.dust) {
-        if (!d.active) continue;
-        const dx = d.x - a.x;
-        const dy = d.y - a.y;
-        if (dx * dx + dy * dy < (ar + d.radius) * (ar + d.radius)) {
-          const tm = a.mass + d.mass;
-          a.vx = (a.vx * a.mass + d.vx * d.mass) / tm;
-          a.vy = (a.vy * a.mass + d.vy * d.mass) / tm;
-          a.x  = (a.x  * a.mass + d.x  * d.mass) / tm;
-          a.y  = (a.y  * a.mass + d.y  * d.mass) / tm;
-          a.mass = tm;
-          d.active = false;
-          anyConsumed = true;
-        }
-      }
-    }
-    if (anyConsumed) this.dust = this.dust.filter(d => d.active);
-  }
-
-  /** Larger asteroid merges with smaller on overlap (planet formation). */
-  private mergeAsteroids() {
-    let anyMerged = false;
-    for (let i = 0; i < this.asteroids.length; i++) {
-      const a = this.asteroids[i];
-      if (!a.active) continue;
-      for (let j = i + 1; j < this.asteroids.length; j++) {
-        const b = this.asteroids[j];
-        if (!b.active) continue;
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const minDist = a.radius + b.radius;
-        if (dx * dx + dy * dy < minDist * minDist) {
-          const bigger  = a.mass >= b.mass ? a : b;
-          const smaller = bigger === a ? b : a;
-          const tm = bigger.mass + smaller.mass;
-          bigger.vx = (bigger.vx * bigger.mass + smaller.vx * smaller.mass) / tm;
-          bigger.vy = (bigger.vy * bigger.mass + smaller.vy * smaller.mass) / tm;
-          bigger.x  = (bigger.x  * bigger.mass + smaller.x  * smaller.mass) / tm;
-          bigger.y  = (bigger.y  * bigger.mass + smaller.y  * smaller.mass) / tm;
-          bigger.mass = tm;
-          smaller.active = false;
-          anyMerged = true;
-        }
-      }
-    }
-    if (anyMerged) this.asteroids = this.asteroids.filter(a => a.active);
-  }
-
   // ─── Rendering ─────────────────────────────────────────────────────────────
 
   private drawScene(dt: number = 0) {
@@ -1661,6 +1777,57 @@ export class Main extends Phaser.Scene {
       this.gfx.fillCircle(flameX, flameY, radius * 0.25);
     }
 
+    // ── Gravity force lines — toward bodies pulling on the player ───────
+    {
+      const minForce = 0.5; // minimum force magnitude to draw a line
+      const bodies: { bx: number; by: number; bm: number }[] = [];
+      // Asteroids
+      for (const a of this.asteroids) {
+        bodies.push({ bx: a.x, by: a.y, bm: a.mass });
+      }
+      // Bots
+      for (const bot of this.bots) {
+        if (bot.active) bodies.push({ bx: bot.x, by: bot.y, bm: bot.mass });
+      }
+      // Remote players
+      if (this.net) {
+        for (const [, rp] of this.net.otherPlayers) {
+          if (rp.phase === 'alive') bodies.push({ bx: rp.x, by: rp.y, bm: rp.mass });
+        }
+      }
+      // Black hole during shrink
+      if (this.phase === 'shrinking') {
+        bodies.push({ bx: WORLD_SIZE / 2, by: WORLD_SIZE / 2, bm: this.bhMass });
+      }
+
+      for (const b of bodies) {
+        const dx = b.bx - x;
+        const dy = b.by - y;
+        const dSq = dx * dx + dy * dy;
+        if (dSq < 1) continue;
+        const dist = Math.sqrt(dSq);
+        // F = G * M / r² (acceleration on player from this body)
+        const force = GRAVITY_G * b.bm / dSq;
+        if (force < minForce) continue;
+        // Normalize force to visual range: thicker/brighter for stronger pull
+        const strength = Math.min(1, force / 80); // 80 px/s² = full opacity
+        const alpha = 0.08 + strength * 0.35;
+        const lineW = 0.5 + strength * 2.5;
+        // Line extends from player edge toward the body
+        const nx = dx / dist;
+        const ny = dy / dist;
+        const lineLen = Math.min(dist - radius, 60 + strength * 140);
+        const startX = x + nx * (radius + 2);
+        const startY = y + ny * (radius + 2);
+        const endX = startX + nx * lineLen;
+        const endY = startY + ny * lineLen;
+        // Color: white for weak, orange/red for strong
+        const color = strength > 0.5 ? 0xff8844 : 0xaaccff;
+        this.gfx.lineStyle(lineW, color, alpha);
+        this.gfx.lineBetween(startX, startY, endX, endY);
+      }
+    }
+
     // ── Spawn protection ring ────────────────────────────────────────────
     if (this.spawnProtectTimer > 0) {
       const t_prot = this.time.now / 1000;
@@ -1704,13 +1871,15 @@ export class Main extends Phaser.Scene {
       this.gfx.strokeCircle(x, y, radius * (1.1 + ft * 0.4));
     }
 
-    // ── Pulsing mass glow (scales and breathes with mass) ────────────────
-    const glowPulse   = 0.04 + 0.025 * Math.sin(this.time.now / 280);
-    const massFrac    = Math.min(1, mass / 4000);
-    const glowRadius  = radius * (2.2 + massFrac * 1.2);
-    const glowColor   = mass > 2000 ? 0xffaa00 : 0xffffff;
+    // ── Gravitational influence zone (physics-derived) ───────────────────
+    // Shows where escape velocity = v_ref. Objects slower than this get captured.
+    // r = 2 * G * M / v_ref²  (Newtonian escape velocity radius)
+    const V_REF = 150; // ~exhaust speed, so thrust ejecta can escape
+    const gravRadius = Math.max(radius * 1.2, 2 * GRAVITY_G * mass / (V_REF * V_REF));
+    const glowPulse  = 0.03 + 0.02 * Math.sin(this.time.now / 280);
+    const glowColor  = mass > 2000 ? 0xffaa00 : 0xffffff;
     this.gfx.fillStyle(glowColor, glowPulse);
-    this.gfx.fillCircle(x, y, glowRadius);
+    this.gfx.fillCircle(x, y, gravRadius);
 
     // ── Player body — color shifts blue → yellow → red with mass ─────────
     const t = Math.min(1, mass / 5000);
@@ -2381,14 +2550,18 @@ export class Main extends Phaser.Scene {
 
     entries.sort((a, b) => b.mass - a.mass);
     const top5 = entries.slice(0, 5);
-    const BONUS_MULT = ["×1.5", "×1.25", "×1.1"];
+    const BONUS_MULTS = [1.50, 1.25, 1.10];
 
     const lines: string[] = ["LEADERBOARD"];
     for (let i = 0; i < top5.length; i++) {
       const e = top5[i];
       const tag = e.isLocal ? `[${e.label}]` : e.label;
-      const bonus = i < 3 ? `  ${BONUS_MULT[i]}` : "";
-      lines.push(`#${i + 1} ${tag}  ${Math.floor(e.mass)}${bonus}`);
+      if (i < 3) {
+        const payout = Math.floor(e.mass * BONUS_MULTS[i] * 0.95);
+        lines.push(`#${i + 1} ${tag}  ${Math.floor(e.mass)}  →${payout}`);
+      } else {
+        lines.push(`#${i + 1} ${tag}  ${Math.floor(e.mass)}`);
+      }
     }
 
     this.leaderboardText.setText(lines.join("\n"));

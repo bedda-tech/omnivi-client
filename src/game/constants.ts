@@ -4,8 +4,7 @@ export const RADIUS_SCALE = 2.0;        // radius = sqrt(mass) * RADIUS_SCALE
 export const STARTING_MASS = 1000;
 export const THRUST_FORCE = 250;        // pixels/s² acceleration
 export const THRUST_MASS_COST_PCT = 0.001; // fraction of mass lost per thrust tick (0.1%/tick = ~6%/sec regardless of size)
-export const DRAG = 0.992;              // velocity multiplier per frame
-export const MAX_SPEED = 500;
+export const MAX_SPEED = 500;           // thrust speed cap (gravity/collisions can exceed)
 export const DUST_EMIT_MASS = 0.3;      // mass of each emitted dust particle
 export const INITIAL_DUST_COUNT = 300;  // dust seeded at match start
 export const MAX_DUST = 600;
@@ -16,14 +15,23 @@ export const DUST_RESPAWN_MIN = 150;    // respawn ambient dust when count falls
 export const ASTEROID_THRESHOLD = 50;  // dust mass at which it graduates to Asteroid
 export const PLANET_THRESHOLD = 1000;  // asteroid mass at which it's labeled a Planet
 export const INITIAL_ASTEROIDS = 6;    // asteroid bodies seeded at match start
-export const ASTEROID_DRAG = 0.9995;   // asteroids resist drag (momentum conservation)
+// No drag in space — all bodies conserve momentum (Newton's 1st law)
 export const ASTEROID_VERTICES = 10;   // polygon vertex count for craggy look
 
 // ─── Gravity (Barnes-Hut) ───────────────────────────────────────────────────
-export const GRAVITY_G = 800;           // gravitational constant (tune for feel)
+export const GRAVITY_G = 1000;          // gravitational constant — Newtonian, tuned for stellar scale
 export const GRAVITY_THETA = 0.5;       // Barnes-Hut approximation threshold
 export const GRAVITY_MIN_DIST_SQ = 900; // 30px — avoid singularity
-export const MAX_G_ACCEL = 500;         // px/s² cap (prevents lag-spike explosions)
+export const MAX_G_ACCEL = 800;         // px/s² cap
+
+// ─── Collision Physics ─────────────────────────────────────────────────────
+export const COLLISION_RESTITUTION  = 0.7;    // coefficient of restitution (1 = perfect elastic, 0 = perfect inelastic)
+export const FRAGMENT_KE_THRESHOLD  = 5e6;    // kinetic energy threshold for fragmentation (reduced_mass * v_rel² / 2)
+export const FRAGMENT_MASS_PCT      = 0.05;   // each body loses up to 5% mass as debris per collision
+export const FRAGMENT_COUNT         = 4;      // debris pieces per body on fragmentation
+export const COLLISION_SEPARATION   = 1.01;   // push-apart multiplier to prevent overlap sticking
+export const TIDAL_STRIP_RATIO      = 3.0;    // mass ratio at which tidal stripping begins (smaller body sheds mass)
+export const TIDAL_STRIP_RATE       = 0.02;   // fraction of smaller body's mass stripped per second at contact
 
 // ─── Black Hole / Big Shrink ─────────────────────────────────────────────────
 export const SHRINK_START_DELAY = 180;   // seconds of normal play before Big Shrink (3-min rounds)
@@ -58,10 +66,8 @@ export const COMBO_TIMEOUT       = 2.5;    // seconds of inactivity before combo
 export const COMBO_ANNOUNCE_THRESHOLDS = [5, 10, 20, 50] as const;
 
 // ─── Round Economy ──────────────────────────────────────────────────────────
-// 40 game-mass units = 1 VI token; matches TIER_START_MASS in OmniviRoom
-export const MASS_PER_TOKEN  = 40;
-// Demo price: 1 VI = $0.05 USD (testnet placeholder; replace with oracle in prod)
-export const VI_PRICE_USD    = 0.05;
+// Mass IS VI — one universal unit of energy. No conversion needed.
+// "Omnivi" = all VI = all energy. The goal is to collect it all.
 
 // ─── AI Bots ────────────────────────────────────────────────────────────────
 export const BOT_COUNT       = 4;

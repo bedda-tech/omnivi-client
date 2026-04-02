@@ -9,8 +9,7 @@ export interface RoundResultsData {
   timeSurvived: number;
 }
 
-const VI_PRICE_USD  = 0.05;
-const MASS_PER_TOKEN = 40;
+// Mass IS VI — no conversion needed
 const TIER_COLORS_S  = ["#44aaff", "#00ff88", "#ffaa00"] as const;
 const RANK_COLORS    = ["#ffd700", "#c0c0c0", "#cd7f32"] as const;
 const RANK_GLOW      = [0xffd700, 0xc0c0c0, 0xcd7f32] as const;
@@ -99,12 +98,10 @@ export class RoundResults extends Scene {
       const escaped    = myResult.phase === "escaped";
       const BONUS_TABLE = [1.50, 1.25, 1.10] as const;
       const bonusMult  = escaped && myRank >= 1 && myRank <= 3 ? BONUS_TABLE[myRank - 1] : 1.0;
-      const finalVI    = myResult.mass / MASS_PER_TOKEN;
-      const boostedVI  = finalVI * bonusMult;
-      const netVI      = boostedVI * 0.97;
+      const finalVI    = Math.floor(myResult.mass);
+      const boostedVI  = Math.floor(finalVI * bonusMult);
+      const netVI      = Math.floor(boostedVI * 0.97);
       const profitVI   = netVI - buyIn;
-      const netUSD     = netVI * VI_PRICE_USD;
-      const profitUSD  = profitVI * VI_PRICE_USD;
 
       const panelW = 520;
       const panelH = 62;
@@ -142,13 +139,13 @@ export class RoundResults extends Scene {
 
       let economyLine: string;
       if (escaped) {
-        const sign = profitVI >= 0 ? "+" : "-";
+        const sign = profitVI >= 0 ? "+" : "";
         economyLine =
-          `Payout $${netUSD.toFixed(2)}  (${sign}$${Math.abs(profitUSD).toFixed(2)})` +
+          `Payout: ${netVI} VI  (${sign}${profitVI} VI)` +
           `  ·  Time: ${timeStr}  ·  Rank: #${myRank}/${results.length}`;
       } else {
         economyLine =
-          `Stake lost: -$${(buyIn * VI_PRICE_USD).toFixed(2)}  (-${buyIn} VI)` +
+          `Stake lost: -${buyIn} VI` +
           `  ·  Time: ${timeStr}  ·  Rank: #${myRank}/${results.length}`;
       }
 
@@ -191,7 +188,7 @@ export class RoundResults extends Scene {
     const headerStyle = { fontFamily: "monospace", fontSize: "11px", color: "#334d66" } as const;
     this.add.text(col.rank,   tableTop, "RANK",   headerStyle).setOrigin(0.5, 0).setDepth(10);
     this.add.text(col.name,   tableTop, "PILOT",  headerStyle).setOrigin(0, 0).setDepth(10);
-    this.add.text(col.mass,   tableTop, "MASS",   headerStyle).setOrigin(0.5, 0).setDepth(10);
+    this.add.text(col.mass,   tableTop, "VI",     headerStyle).setOrigin(0.5, 0).setDepth(10);
     this.add.text(col.kills,  tableTop, "KILLS",  headerStyle).setOrigin(0.5, 0).setDepth(10);
     this.add.text(col.tier,   tableTop, "TIER",   headerStyle).setOrigin(0.5, 0).setDepth(10);
     this.add.text(col.status, tableTop, "STATUS", headerStyle).setOrigin(0.5, 0).setDepth(10);

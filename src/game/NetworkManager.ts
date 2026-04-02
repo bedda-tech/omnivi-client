@@ -25,12 +25,32 @@ export function setStoredTier(tier: number): void {
   localStorage.setItem(TIER_KEY, String(tier));
 }
 
-/** Human-readable tier labels and VI cost */
+/** Human-readable tier labels and VI buy-in (mass = VI, no conversion) */
 export const TIER_INFO = [
-  { label: "Quick",       viCost: 5,   massPerToken: 40 },
-  { label: "Standard",    viCost: 25,  massPerToken: 40 },
-  { label: "High Roller", viCost: 100, massPerToken: 40 },
+  { label: "Quick",       viCost: 200 },
+  { label: "Standard",    viCost: 1000 },
+  { label: "High Roller", viCost: 4000 },
 ] as const;
+
+// ─── VI Balance (simulated wallet) ───────────────────────────────────────────
+const VI_BALANCE_KEY = "omnivi_vi_balance";
+export const VI_BALANCE_START = 10_000; // VI given to new players on first launch
+
+export function getViBalance(): number {
+  const v = parseInt(localStorage.getItem(VI_BALANCE_KEY) ?? String(VI_BALANCE_START), 10);
+  return isNaN(v) ? VI_BALANCE_START : v;
+}
+export function setViBalance(n: number): void {
+  localStorage.setItem(VI_BALANCE_KEY, String(Math.max(0, Math.round(n))));
+}
+/** Deduct buy-in cost for the given tier. Call at round start. */
+export function deductBuyIn(tier: number): void {
+  setViBalance(getViBalance() - TIER_INFO[tier].viCost);
+}
+/** Credit a payout to the player's balance. Call on escape/win. */
+export function creditPayout(amount: number): void {
+  setViBalance(getViBalance() + Math.max(0, Math.round(amount)));
+}
 
 // ─── Remote player snapshot (what the server tells us about other players) ───
 export interface RemotePlayer {
@@ -57,6 +77,7 @@ export interface ServerGameState {
   bhMass: number;
   bhX: number;
   bhY: number;
+  prizePool: number;
 }
 
 // ─── Default server URL (override via VITE_SERVER_URL env var) ────────────────
@@ -79,6 +100,22 @@ export interface KillBountyPayload {
   bonusMass: number;
 }
 
+export interface RoundResult {
+  id:        string;
+  name:      string;
+  mass:      number;
+  kills:     number;
+  phase:     string;
+  tier:      number;
+  buyInMass: number;
+}
+
+export interface LobbyState {
+  phase:          string;
+  lobbyCountdown: number;
+  playerCount:    number;
+}
+
 export class NetworkManager {
   private client: Client;
   private room: Room | null = null;
@@ -90,24 +127,45 @@ export class NetworkManager {
     bhMass: 0,
     bhX: 0,
     bhY: 0,
+    prizePool: 0,
   };
   private _onClaimReady: ((payload: ClaimReadyPayload) => void) | null = null;
   private _onPlayerAdded: ((id: string, rp: RemotePlayer) => void) | null = null;
   private _onPlayerRemoved: ((id: string) => void) | null = null;
   private _onKillBounty: ((payload: KillBountyPayload) => void) | null = null;
+  /** Fires whenever the server broadcasts a new authoritative mass for the local player. */
+  private _onSelfMassUpdate: ((mass: number) => void) | null = null;
+  /** Fires when server forcibly marks this player as BH-consumed (authoritative death). */
+  private _onBhConsumed: (() => void) | null = null;
+  private _onRoundStarted: (() => void) | null = null;
+  private _onRoundEnded: ((results: RoundResult[]) => void) | null = null;
+  private _onLobbyState: ((state: LobbyState) => void) | null = null;
+  private _onLobbyReset: (() => void) | null = null;
+  /** Last server-authoritative mass for the local player (0 = not yet received). */
+  private _serverMass: number = 0;
 
   constructor(serverUrl: string = DEFAULT_SERVER_URL) {
     this.client = new Client(serverUrl);
   }
 
   /** Join (or create) the shared "omnivi" room. Non-throwing — failures are logged. */
-  async connect(name: string = "Pilot", tier: number = 1): Promise<void> {
-    this.room = await this.client.joinOrCreate<any>("omnivi", { name, tier });
+  async connect(name: string = "Pilot", tier: number = 1, elo: number = 1000): Promise<void> {
+    this.room = await this.client.joinOrCreate<any>("omnivi", { name, tier, elo });
     this._mySessionId = this.room.sessionId;
 
-    // Track remote players (skip our own entry)
+    // Track remote players; also track own player for server mass corrections
     this.room.state.players.onAdd((player: any, sessionId: string) => {
-      if (sessionId === this._mySessionId) return;
+      if (sessionId === this._mySessionId) {
+        // Subscribe to own player state — used for server-authoritative mass reconciliation
+        this._serverMass = player.mass;
+        player.onChange(() => {
+          if (player.mass !== this._serverMass) {
+            this._serverMass = player.mass;
+            this._onSelfMassUpdate?.(player.mass);
+          }
+        });
+        return;
+      }
       const rp = mapPlayer(sessionId, player);
       this._players.set(sessionId, rp);
       this._onPlayerAdded?.(sessionId, rp);
@@ -121,17 +179,6 @@ export class NetworkManager {
       this._onPlayerRemoved?.(sessionId);
     });
 
-    // Mirror server game state (phase, timers, BH)
-    this.room.state.onChange(() => {
-      const s = this.room!.state;
-      this._gameState = {
-        phase: s.phase,
-        shrinkTimer: s.shrinkTimer,
-        bhMass: s.bhMass,
-        bhX: s.bhX,
-        bhY: s.bhY,
-      };
-    });
 
     // Server sends this after player escapes + SIGNER_PRIVATE_KEY is configured
     this.room.onMessage("claim_ready", (payload: ClaimReadyPayload) => {
@@ -145,6 +192,56 @@ export class NetworkManager {
       this._onKillBounty?.(payload);
     });
 
+    // Server-authoritative BH consumption: server detected player inside BH
+    this.room.onMessage("bh_consumed", () => {
+      console.log("[Net] Server BH consumed this player");
+      this._onBhConsumed?.();
+    });
+
+    // Lobby/round lifecycle messages
+    this.room.onMessage("round_start", () => {
+      console.log("[Net] Round started");
+      this._onRoundStarted?.();
+    });
+
+    this.room.onMessage("round_ended", (payload: { results: RoundResult[] }) => {
+      console.log("[Net] Round ended, results:", payload.results.length);
+      this._onRoundEnded?.(payload.results);
+    });
+
+    this.room.onMessage("room_phase", (payload: { phase: string; lobbyCountdown: number }) => {
+      this._onLobbyState?.({
+        phase: payload.phase,
+        lobbyCountdown: payload.lobbyCountdown,
+        playerCount: this.room!.state.playerCount ?? 0,
+      });
+    });
+
+    this.room.onMessage("lobby_reset", () => {
+      console.log("[Net] Lobby reset for next round");
+      this._onLobbyReset?.();
+    });
+
+    // Mirror lobby state changes
+    this.room.state.onChange(() => {
+      const s = this.room!.state;
+      this._gameState = {
+        phase: s.phase,
+        shrinkTimer: s.shrinkTimer,
+        bhMass: s.bhMass,
+        bhX: s.bhX,
+        bhY: s.bhY,
+        prizePool: s.prizePool ?? 0,
+      };
+      if (s.phase === "lobby" || s.phase === "ended") {
+        this._onLobbyState?.({
+          phase: s.phase,
+          lobbyCountdown: s.lobbyCountdown ?? 0,
+          playerCount: s.playerCount ?? 0,
+        });
+      }
+    });
+
     console.log(`[Net] Joined room ${this.room.roomId} as ${this._mySessionId} (tier ${tier})`);
   }
 
@@ -155,12 +252,11 @@ export class NetworkManager {
     y: number,
     vx: number,
     vy: number,
-    mass: number,
     isThrusting: boolean,
     isEscaping: boolean,
   ): void {
     if (!this.room) return;
-    this.room.send("input", { x, y, vx, vy, mass, isThrusting, isEscaping });
+    this.room.send("input", { x, y, vx, vy, isThrusting, isEscaping });
   }
 
   /** Notify server that we absorbed another player (victimId = their sessionId). */
@@ -214,12 +310,42 @@ export class NetworkManager {
     this._onKillBounty = cb;
   }
 
+  /**
+   * Called whenever the server broadcasts a new authoritative mass for the local player.
+   * Use this to apply server corrections to the local simulation.
+   */
+  onSelfMassUpdate(cb: (mass: number) => void): void {
+    this._onSelfMassUpdate = cb;
+  }
+
+  /** Called when server signals round is starting (lobby → playing). */
+  onRoundStarted(cb: () => void): void {
+    this._onRoundStarted = cb;
+  }
+
+  /** Called when all players are consumed/escaped — provides final rankings. */
+  onRoundEnded(cb: (results: RoundResult[]) => void): void {
+    this._onRoundEnded = cb;
+  }
+
+  /** Called whenever lobby state changes (countdown, player count). */
+  onLobbyState(cb: (state: LobbyState) => void): void {
+    this._onLobbyState = cb;
+  }
+
+  /** Called when server resets lobby for next round. */
+  onLobbyReset(cb: () => void): void {
+    this._onLobbyReset = cb;
+  }
+
   // ── Accessors ───────────────────────────────────────────────────────────────
 
   get mySessionId(): string { return this._mySessionId; }
   get otherPlayers(): Map<string, RemotePlayer> { return this._players; }
   get gameState(): ServerGameState { return this._gameState; }
   get connected(): boolean { return this.room !== null; }
+  /** Last server-authoritative mass for the local player. 0 if not yet received. */
+  get serverMass(): number { return this._serverMass; }
 
   disconnect(): void {
     this.room?.leave();

@@ -1,4 +1,4 @@
-import { massToRadius, WORLD_SIZE, ASTEROID_DRAG, ASTEROID_VERTICES } from "../constants";
+import { massToRadius, WORLD_SIZE, ASTEROID_VERTICES } from "../constants";
 
 export class Asteroid {
   x: number;
@@ -33,14 +33,12 @@ export class Asteroid {
     this.rotation += this.rotationSpeed * dt;
     this.x += this.vx * dt;
     this.y += this.vy * dt;
-    const dragFactor = Math.pow(ASTEROID_DRAG, dt * 60);
-    this.vx *= dragFactor;
-    this.vy *= dragFactor;
-    // Bounce at world edges (less energy loss than player, asteroids are denser)
+    // No drag in space — asteroid coasts freely
+    // Elastic bounce at world edges
     const r = this.radius;
-    if (this.x < r) { this.x = r; this.vx = Math.abs(this.vx) * 0.85; }
-    if (this.x > WORLD_SIZE - r) { this.x = WORLD_SIZE - r; this.vx = -Math.abs(this.vx) * 0.85; }
-    if (this.y < r) { this.y = r; this.vy = Math.abs(this.vy) * 0.85; }
-    if (this.y > WORLD_SIZE - r) { this.y = WORLD_SIZE - r; this.vy = -Math.abs(this.vy) * 0.85; }
+    if (this.x < r) { this.x = r; this.vx = Math.abs(this.vx); }
+    if (this.x > WORLD_SIZE - r) { this.x = WORLD_SIZE - r; this.vx = -Math.abs(this.vx); }
+    if (this.y < r) { this.y = r; this.vy = Math.abs(this.vy); }
+    if (this.y > WORLD_SIZE - r) { this.y = WORLD_SIZE - r; this.vy = -Math.abs(this.vy); }
   }
 }

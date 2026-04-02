@@ -1,11 +1,9 @@
 import { useRef, useEffect, useState } from "react";
 import { IRefPhaserGame, PhaserGame } from "./game/PhaserGame";
-import { MainMenu } from "./game/scenes/MainMenu";
 import { submitClaim, submitRestake, ClaimPayload } from "./game/blockchain/ClaimClient";
 import { TIER_INFO, getStoredTier, setStoredTier } from "./game/NetworkManager";
 
-// Demo token price — same as VI_PRICE_USD in Main.ts
-const VI_PRICE_USD = 0.05;
+// Mass IS VI — no dollar conversion
 
 /** Format wei string (18-decimal BigInt) to VI float */
 function weiToVI(weiStr: string): number {
@@ -67,31 +65,12 @@ function App() {
     }
   };
 
-  const changeScene = () => {
-    if (phaserRef.current) {
-      const scene = phaserRef.current.scene as MainMenu;
-      if (scene) scene.changeScene();
-    }
-  };
-
-  const currentScene = (scene: Phaser.Scene) => {
-    console.log("App -> scene", scene);
-  };
-
   // Compute payout display from claim payload
   const payoutVI  = pendingClaim ? weiToVI(pendingClaim.finalMass) : 0;
-  const payoutUSD = payoutVI * VI_PRICE_USD;
 
   return (
     <div id="app">
-      <PhaserGame ref={phaserRef} currentActiveScene={currentScene} />
-      <div>
-        <div>
-          <button className="button" onClick={changeScene}>
-            Change Scene
-          </button>
-        </div>
-      </div>
+      <PhaserGame ref={phaserRef} />
 
       {/* On-chain claim overlay — shown after server sends a signed claim */}
       {pendingClaim && (
@@ -106,7 +85,7 @@ function App() {
             <>
               <div style={{ color: "#00ffaa", fontSize: 18, marginBottom: 8 }}>Tokens Claimed!</div>
               <div style={{ color: "#aaa", fontSize: 12, marginBottom: 4 }}>
-                ${payoutUSD.toFixed(2)} ({payoutVI.toFixed(2)} VI) sent to your wallet
+                {Math.floor(payoutVI)} VI sent to your wallet
               </div>
               <div style={{ fontSize: 11, color: "#666", wordBreak: "break-all", marginBottom: 10 }}>tx: {claimTx}</div>
               {/* Tier selector + instant re-stake */}
@@ -121,7 +100,7 @@ function App() {
                       border: restakeTier === i ? "2px solid #00ffaa" : "2px solid #444",
                       fontWeight: restakeTier === i ? "bold" : "normal",
                     }}>
-                    {t.label}<br/>${(t.viCost * VI_PRICE_USD).toFixed(2)}
+                    {t.label}<br/>{t.viCost} VI
                   </button>
                 ))}
               </div>
@@ -154,10 +133,10 @@ function App() {
             <>
               <div style={{ color: "#00ffaa", fontSize: 18, marginBottom: 4 }}>You Escaped!</div>
               <div style={{ color: "#ffdd00", fontSize: 22, fontWeight: "bold", marginBottom: 4 }}>
-                ${payoutUSD.toFixed(2)}
+                {Math.floor(payoutVI)} VI
               </div>
               <div style={{ color: "#888", fontSize: 12, marginBottom: 14 }}>
-                {payoutVI.toFixed(2)} VI tokens · 3% rake deducted on-chain
+                3% rake deducted on-chain
               </div>
 
               {/* Tier selector */}
@@ -174,7 +153,7 @@ function App() {
                     }}>
                     {t.label}<br/>
                     <span style={{ color: restakeTier === i ? "#000" : "#888" }}>
-                      ${(t.viCost * VI_PRICE_USD).toFixed(2)}
+                      {t.viCost} VI
                     </span>
                   </button>
                 ))}
