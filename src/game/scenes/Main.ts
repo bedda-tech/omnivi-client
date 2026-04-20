@@ -13,8 +13,6 @@ import {
   SHIELD_MASS_COST_PCT, SHIELD_DURATION, SHIELD_COOLDOWN, COMBO_TIMEOUT,
   COMBO_ANNOUNCE_THRESHOLDS, BOT_COUNT, BOT_NAMES,
   BOT_COLORS, massToRadius, parseHslColor,
-  COLLISION_RESTITUTION, FRAGMENT_KE_THRESHOLD, FRAGMENT_MASS_PCT, FRAGMENT_COUNT,
-  COLLISION_SEPARATION,
   type GamePhase,
 } from "../constants";
 import { SfxManager } from "../managers/SfxManager";
@@ -496,6 +494,21 @@ export class Main extends Phaser.Scene {
       );
     });
 
+    // When server signals round end, navigate to the polished RoundResults scene
+    this.net?.onRoundEnded((results) => {
+      // Delay so player can read their local end screen before transitioning
+      const delay = (this.phase === 'escaped' || this.phase === 'consumed') ? 2500 : 500;
+      this.time.delayedCall(delay, () => {
+        this.scene.start("RoundResults", {
+          results,
+          mySessionId: this.net?.mySessionId ?? "",
+          playerTier: this.playerTier,
+          buyInTokens: this.buyInTokens,
+          timeSurvived: Math.floor(this.gameTimer),
+        });
+      });
+    });
+
     // Re-stake: React layer dispatches this after a successful on-chain restake
     const onRestakeDone = () => this.scene.restart();
     window.addEventListener("omnivi:restake_done", onRestakeDone, { once: true });
@@ -874,7 +887,7 @@ export class Main extends Phaser.Scene {
           // Similar size: elastic collision with asteroid
           const pBody = { x: this.player.x, y: this.player.y, vx: this.player.vx, vy: this.player.vy, mass: this.player.mass, radius: pr };
           const aBody = { x: a.x, y: a.y, vx: a.vx, vy: a.vy, mass: a.mass, radius: a.radius };
-          const debris = this.resolveElasticCollision(pBody, aBody);
+          const debris = PhysicsManager.resolveElasticCollision(pBody, aBody);
           this.player.x = pBody.x; this.player.y = pBody.y;
           this.player.vx = pBody.vx; this.player.vy = pBody.vy;
           this.player.mass = pBody.mass;
@@ -1246,93 +1259,6 @@ export class Main extends Phaser.Scene {
     }
   }
 
-  // ─── Collision Physics ─────────────────────────────────────────────────────
-
-  /**
-   * Resolve an elastic collision between two circular bodies.
-   * Applies impulse-based separation, bounce, and optional fragmentation.
-   * Modifies a and b positions/velocities in place.
-   * Returns debris particles to spawn (empty if no fragmentation).
-   */
-  private resolveElasticCollision(
-    a: { x: number; y: number; vx: number; vy: number; mass: number; radius: number },
-    b: { x: number; y: number; vx: number; vy: number; mass: number; radius: number },
-  ): { x: number; y: number; vx: number; vy: number; mass: number }[] {
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const dist = Math.hypot(dx, dy);
-    if (dist < 0.001) return []; // degenerate overlap
-
-    // Collision normal (a -> b)
-    const nx = dx / dist;
-    const ny = dy / dist;
-
-    // Separate overlapping bodies (proportional to inverse mass)
-    const overlap = (a.radius + b.radius) - dist;
-    if (overlap > 0) {
-      const totalInvMass = 1 / a.mass + 1 / b.mass;
-      const sepA = (overlap * COLLISION_SEPARATION) * (1 / a.mass) / totalInvMass;
-      const sepB = (overlap * COLLISION_SEPARATION) * (1 / b.mass) / totalInvMass;
-      a.x -= nx * sepA;
-      a.y -= ny * sepA;
-      b.x += nx * sepB;
-      b.y += ny * sepB;
-    }
-
-    // Relative velocity along collision normal
-    const dvx = a.vx - b.vx;
-    const dvy = a.vy - b.vy;
-    const vRelN = dvx * nx + dvy * ny;
-
-    // Only resolve if bodies are approaching
-    if (vRelN <= 0) return [];
-
-    // Impulse magnitude (restitution-based)
-    const e = COLLISION_RESTITUTION;
-    const j = (1 + e) * vRelN / (1 / a.mass + 1 / b.mass);
-
-    // Apply impulse
-    a.vx -= (j / a.mass) * nx;
-    a.vy -= (j / a.mass) * ny;
-    b.vx += (j / b.mass) * nx;
-    b.vy += (j / b.mass) * ny;
-
-    // Fragmentation check: high-energy collisions break off pieces
-    const debris: { x: number; y: number; vx: number; vy: number; mass: number }[] = [];
-    const reducedMass = (a.mass * b.mass) / (a.mass + b.mass);
-    const impactKE = 0.5 * reducedMass * vRelN * vRelN;
-
-    if (impactKE > FRAGMENT_KE_THRESHOLD) {
-      // Energy scale factor: more energy = more mass shed (up to FRAGMENT_MASS_PCT)
-      const energyScale = Math.min(1, impactKE / (FRAGMENT_KE_THRESHOLD * 5));
-      const contactX = a.x + nx * a.radius;
-      const contactY = a.y + ny * a.radius;
-
-      for (const body of [a, b]) {
-        if (body.mass < 30) continue; // too small to fragment
-        const shedMass = body.mass * FRAGMENT_MASS_PCT * energyScale;
-        const perPiece = shedMass / FRAGMENT_COUNT;
-        if (perPiece < 1) continue;
-        body.mass -= shedMass;
-
-        for (let k = 0; k < FRAGMENT_COUNT; k++) {
-          // Spray debris outward from contact point with random spread
-          const angle = Math.atan2(body.y - contactY, body.x - contactX) + (Math.random() - 0.5) * Math.PI;
-          const speed = 80 + Math.random() * 200 * energyScale;
-          debris.push({
-            x: contactX + Math.cos(angle) * (body.radius * 0.3),
-            y: contactY + Math.sin(angle) * (body.radius * 0.3),
-            vx: body.vx + Math.cos(angle) * speed,
-            vy: body.vy + Math.sin(angle) * speed,
-            mass: perPiece,
-          });
-        }
-      }
-    }
-
-    return debris;
-  }
-
   /** Spawn debris from a collision as dust particles or asteroids. */
   private spawnCollisionDebris(debris: { x: number; y: number; vx: number; vy: number; mass: number }[]) {
     for (const d of debris) {
@@ -1403,7 +1329,7 @@ export class Main extends Phaser.Scene {
         // We can only modify local player; create a proxy for the remote body
         const rpProxy = { x: rp.x, y: rp.y, vx: rp.vx, vy: rp.vy, mass: rp.mass, radius: rr };
         const localBody = { x: this.player.x, y: this.player.y, vx: this.player.vx, vy: this.player.vy, mass: this.player.mass, radius: pr };
-        const debris = this.resolveElasticCollision(localBody, rpProxy);
+        const debris = PhysicsManager.resolveElasticCollision(localBody, rpProxy);
         // Apply local player changes (remote player's response is handled by their client)
         this.player.x = localBody.x;
         this.player.y = localBody.y;
@@ -1429,7 +1355,7 @@ export class Main extends Phaser.Scene {
     for (const bot of this.bots) {
       if (!bot.active) continue;
 
-      bot.updateAI(dt, this.player, this.dust, this.phase, WORLD_SIZE / 2, WORLD_SIZE / 2, this.bhMass, this.bots);
+      bot.updateAI(dt, this.player, this.dust, this.asteroids, this.phase, WORLD_SIZE / 2, WORLD_SIZE / 2, this.bhMass, this.bots);
       bot.updatePhysics(dt);
 
       // BH gravity + consumption during shrink phase
@@ -1468,6 +1394,39 @@ export class Main extends Phaser.Scene {
         }
       }
       if (dustAbsorbed) this.dust = this.dust.filter(d => d.active);
+
+      // Bot ↔ Asteroid collision
+      let asteroidAbsorbed = false;
+      for (const a of this.asteroids) {
+        if (!a.active) continue;
+        const dx = a.x - bot.x;
+        const dy = a.y - bot.y;
+        if (dx * dx + dy * dy >= (bot.radius + a.radius) ** 2) continue;
+        if (bot.mass >= a.mass * ABSORB_RATIO) {
+          const tm = bot.mass + a.mass;
+          bot.vx = (bot.vx * bot.mass + a.vx * a.mass) / tm;
+          bot.vy = (bot.vy * bot.mass + a.vy * a.mass) / tm;
+          bot.mass = tm;
+          a.active = false;
+          asteroidAbsorbed = true;
+        } else if (a.mass >= bot.mass * ABSORB_RATIO) {
+          const tm = a.mass + bot.mass;
+          a.vx = (a.vx * a.mass + bot.vx * bot.mass) / tm;
+          a.vy = (a.vy * a.mass + bot.vy * bot.mass) / tm;
+          a.mass = tm;
+          bot.active = false;
+          break;
+        } else {
+          const bBody = { x: bot.x, y: bot.y, vx: bot.vx, vy: bot.vy, mass: bot.mass, radius: bot.radius };
+          const aBody = { x: a.x, y: a.y, vx: a.vx, vy: a.vy, mass: a.mass, radius: a.radius };
+          const debris = PhysicsManager.resolveElasticCollision(bBody, aBody);
+          bot.x = bBody.x; bot.y = bBody.y; bot.vx = bBody.vx; bot.vy = bBody.vy; bot.mass = bBody.mass;
+          a.x = aBody.x; a.y = aBody.y; a.vx = aBody.vx; a.vy = aBody.vy; a.mass = aBody.mass;
+          if (debris.length > 0) this.spawnCollisionDebris(debris);
+        }
+      }
+      if (asteroidAbsorbed) this.asteroids = this.asteroids.filter(a => a.active);
+      if (!bot.active) continue;
 
       // Player ↔ Bot collision
       {
@@ -1508,7 +1467,7 @@ export class Main extends Phaser.Scene {
             // Similar size: elastic collision
             const pBody = { x: this.player.x, y: this.player.y, vx: this.player.vx, vy: this.player.vy, mass: this.player.mass, radius: this.player.radius };
             const bBody = { x: bot.x, y: bot.y, vx: bot.vx, vy: bot.vy, mass: bot.mass, radius: bot.radius };
-            const debris = this.resolveElasticCollision(pBody, bBody);
+            const debris = PhysicsManager.resolveElasticCollision(pBody, bBody);
             this.player.x = pBody.x; this.player.y = pBody.y;
             this.player.vx = pBody.vx; this.player.vy = pBody.vy;
             this.player.mass = pBody.mass;
@@ -1551,7 +1510,7 @@ export class Main extends Phaser.Scene {
           // Similar size: elastic collision between bots
           const bA = { x: bot.x, y: bot.y, vx: bot.vx, vy: bot.vy, mass: bot.mass, radius: bot.radius };
           const bB = { x: other.x, y: other.y, vx: other.vx, vy: other.vy, mass: other.mass, radius: other.radius };
-          const debris = this.resolveElasticCollision(bA, bB);
+          const debris = PhysicsManager.resolveElasticCollision(bA, bB);
           bot.x = bA.x; bot.y = bA.y; bot.vx = bA.vx; bot.vy = bA.vy; bot.mass = bA.mass;
           other.x = bB.x; other.y = bB.y; other.vx = bB.vx; other.vy = bB.vy; other.mass = bB.mass;
           if (debris.length > 0) this.spawnCollisionDebris(debris);

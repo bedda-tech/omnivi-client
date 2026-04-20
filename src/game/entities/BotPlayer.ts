@@ -3,6 +3,7 @@ import {
   ABSORB_RATIO, BOT_THRUST, BOT_MAX_SPEED, BOT_DETECT_RANGE,
   BOOST_IMPULSE, BOOST_MASS_COST_PCT, BOOST_COOLDOWN, GamePhase,
 } from "../constants";
+import type { Asteroid } from "./Asteroid";
 import type { DustParticle } from "./DustParticle";
 import type { Player } from "./Player";
 
@@ -48,13 +49,15 @@ export class BotPlayer {
    *  1. Flee Black Hole (shrinking phase, within danger radius)
    *  2. Flee player (player can eat us)
    *  3. Hunt nearest edible target (bot or player)
-   *  4. Chase nearest dust
-   *  5. Wander
+   *  4. Chase nearest edible asteroid
+   *  5. Chase nearest dust
+   *  6. Wander
    */
   updateAI(
     dt: number,
     player: Player,
     dust: DustParticle[],
+    asteroids: Asteroid[],
     phase: GamePhase,
     bhX: number,
     bhY: number,
@@ -138,7 +141,25 @@ export class BotPlayer {
       return;
     }
 
-    // ── 4. CHASE nearest dust ─────────────────────────────────────────────
+    // ── 4. CHASE nearest edible asteroid ─────────────────────────────────
+    let nearestAsteroid: Asteroid | null = null;
+    let nearestAstDistSq = (BOT_DETECT_RANGE * 0.8) ** 2;
+    for (const a of asteroids) {
+      if (!a.active) continue;
+      if (this.mass < a.mass * ABSORB_RATIO) continue;
+      const dSq = (a.x - this.x) ** 2 + (a.y - this.y) ** 2;
+      if (dSq < nearestAstDistSq) {
+        nearestAstDistSq = dSq;
+        nearestAsteroid = a;
+      }
+    }
+    if (nearestAsteroid) {
+      this.rotation = Math.atan2(nearestAsteroid.y - this.y, nearestAsteroid.x - this.x);
+      this.thrustingThisFrame = true;
+      return;
+    }
+
+    // ── 5. CHASE nearest dust ─────────────────────────────────────────────
     let nearestDust: DustParticle | null = null;
     let nearestDustDistSq = (BOT_DETECT_RANGE * 0.7) ** 2;
     for (const d of dust) {
@@ -155,7 +176,7 @@ export class BotPlayer {
       return;
     }
 
-    // ── 5. WANDER ─────────────────────────────────────────────────────────
+    // ── 6. WANDER ─────────────────────────────────────────────────────────
     this.wanderCooldown -= dt;
     if (this.wanderCooldown <= 0 || !this.wanderTarget) {
       const angle = Math.random() * Math.PI * 2;

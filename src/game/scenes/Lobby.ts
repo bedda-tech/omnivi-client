@@ -7,6 +7,7 @@ import {
   setStoredTier,
   TIER_INFO,
   LobbyState,
+  getViBalance,
 } from "../NetworkManager";
 
 // Mass IS VI — no dollar conversion
@@ -153,6 +154,17 @@ export class Lobby extends Scene {
       fontFamily: "monospace",
       fontSize: "11px",
       color: "#4466aa",
+      align: "center",
+    }).setOrigin(0.5).setDepth(10);
+
+    // ── VI balance display ─────────────────────────────────────────────────────
+    const bal = getViBalance();
+    this.add.text(cx, 175, `WALLET:  ${bal.toLocaleString()} VI`, {
+      fontFamily: "monospace",
+      fontSize: "13px",
+      color: bal >= TIER_INFO[0].viCost ? "#00ffcc" : "#ff4444",
+      stroke: "#000000",
+      strokeThickness: 1,
       align: "center",
     }).setOrigin(0.5).setDepth(10);
 
@@ -343,27 +355,36 @@ export class Lobby extends Scene {
 
     this.tierGfx.clear();
 
+    const balance = getViBalance();
     this.tierBtns.forEach((btn, i) => {
       const bx = cx + (i - 1) * tierSpacing;
+      const canAfford = balance >= TIER_INFO[i].viCost;
       if (i === index) {
-        this.tierGfx.fillStyle(TIER_COLORS[i], 0.12);
+        this.tierGfx.fillStyle(TIER_COLORS[i], canAfford ? 0.12 : 0.06);
         this.tierGfx.fillRoundedRect(bx - CARD_W / 2, tierY - CARD_H / 2, CARD_W, CARD_H, 8);
-        this.tierGfx.lineStyle(2, TIER_COLORS[i], 0.9);
+        this.tierGfx.lineStyle(2, canAfford ? TIER_COLORS[i] : 0x444444, canAfford ? 0.9 : 0.4);
         this.tierGfx.strokeRoundedRect(bx - CARD_W / 2, tierY - CARD_H / 2, CARD_W, CARD_H, 8);
-        this.tierGfx.lineStyle(4, TIER_COLORS[i], 0.22);
-        this.tierGfx.strokeRoundedRect(bx - CARD_W / 2 - 3, tierY - CARD_H / 2 - 3, CARD_W + 6, CARD_H + 6, 10);
-        btn.setAlpha(1.0).setStyle({ fontSize: "13px" });
+        if (canAfford) {
+          this.tierGfx.lineStyle(4, TIER_COLORS[i], 0.22);
+          this.tierGfx.strokeRoundedRect(bx - CARD_W / 2 - 3, tierY - CARD_H / 2 - 3, CARD_W + 6, CARD_H + 6, 10);
+        }
+        btn.setAlpha(canAfford ? 1.0 : 0.4).setStyle({ fontSize: "13px" });
       } else {
-        this.tierGfx.lineStyle(1, TIER_COLORS[i], 0.25);
+        this.tierGfx.lineStyle(1, canAfford ? TIER_COLORS[i] : 0x333333, canAfford ? 0.25 : 0.15);
         this.tierGfx.strokeRoundedRect(bx - CARD_W / 2, tierY - CARD_H / 2, CARD_W, CARD_H, 8);
-        btn.setAlpha(0.45).setStyle({ fontSize: "12px" });
+        btn.setAlpha(canAfford ? 0.45 : 0.2).setStyle({ fontSize: "12px" });
       }
     });
 
     const info = TIER_INFO[index];
+    const canAffordSelected = balance >= info.viCost;
+    const remaining = balance - info.viCost;
+    const descLine = canAffordSelected
+      ? `stake ${info.viCost.toLocaleString()} VI  ·  ${remaining.toLocaleString()} remaining  ·  top-3 earns x1.5`
+      : `INSUFFICIENT VI  ·  need ${(info.viCost - balance).toLocaleString()} more`;
     this.tierDescText
-      .setText(`start ${info.viCost} VI  ·  top-3 earns up to x1.5`)
-      .setColor(TIER_COLORS_S[index]);
+      .setText(descLine)
+      .setColor(canAffordSelected ? TIER_COLORS_S[index] : "#ff4444");
   }
 
   private cancelLobby(): void {
