@@ -484,14 +484,23 @@ export class Main extends Phaser.Scene {
 
     // Sync server-spawned thrust dust: insert into local dust array with serverId so
     // the absorption loop can reference it when reporting back to the server.
-    this.net?.onServerDustAdded((id, x, y, mass) => {
-      const d = new DustParticle(x, y, 0, 0, mass);
-      d.serverId = id;
-      this.dust.push(d);
+    // Server asteroids (kind="asteroid") are inserted into the asteroids array instead.
+    this.net?.onServerDustAdded((id, x, y, mass, kind) => {
+      if (kind === "asteroid") {
+        const a = new Asteroid(x, y, 0, 0, mass);
+        a.serverId = id;
+        this.asteroids.push(a);
+      } else {
+        const d = new DustParticle(x, y, 0, 0, mass);
+        d.serverId = id;
+        this.dust.push(d);
+      }
     });
     this.net?.onServerDustRemoved((id) => {
       const d = this.dust.find(p => p.serverId === id);
-      if (d) d.active = false;
+      if (d) { d.active = false; return; }
+      const a = this.asteroids.find(a => a.serverId === id);
+      if (a) a.active = false;
     });
 
     // Kill bounty: apply bonus mass and show floating label
@@ -877,7 +886,11 @@ export class Main extends Phaser.Scene {
           this.player.vx = (this.player.vx * this.player.mass + a.vx * a.mass) / tm;
           this.player.vy = (this.player.vy * this.player.mass + a.vy * a.mass) / tm;
           this.player.mass = tm;
-          this.net?.sendAbsorb("asteroid", a.mass);
+          if (a.serverId) {
+            this.net?.sendAbsorbDust(a.serverId);
+          } else {
+            this.net?.sendAbsorb("asteroid", a.mass);
+          }
           a.active = false;
           absorbed = true;
           this.bumpCombo(3);

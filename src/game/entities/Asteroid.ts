@@ -9,6 +9,8 @@ export class Asteroid {
   rotation: number;
   rotationSpeed: number;  // rad/s
   active: boolean = true;
+  /** Non-null when this asteroid was formed by the server; required for server-auth absorption. */
+  serverId: string | null = null;
   // Pre-computed per-vertex radius multipliers for craggy polygon shape [0.65..1.35]
   shapeOffsets: number[];
 

@@ -141,8 +141,8 @@ export class NetworkManager {
   private _onRoundEnded: ((results: RoundResult[]) => void) | null = null;
   private _onLobbyState: ((state: LobbyState) => void) | null = null;
   private _onLobbyReset: (() => void) | null = null;
-  /** Fires when server spawns a new dust particle near a thrusting player. */
-  private _onServerDustAdded: ((id: string, x: number, y: number, mass: number) => void) | null = null;
+  /** Fires when server spawns a new dust particle or forms a server asteroid. */
+  private _onServerDustAdded: ((id: string, x: number, y: number, mass: number, kind: string) => void) | null = null;
   /** Fires when a server dust particle is absorbed (by any player) or expires. */
   private _onServerDustRemoved: ((id: string) => void) | null = null;
   /** Last server-authoritative mass for the local player (0 = not yet received). */
@@ -185,7 +185,7 @@ export class NetworkManager {
 
     // Sync server-managed dust particles (thrust exhaust dust for mass credit)
     this.room.state.dust.onAdd((d: any, id: string) => {
-      this._onServerDustAdded?.(id, d.x, d.y, d.mass);
+      this._onServerDustAdded?.(id, d.x, d.y, d.mass, d.kind ?? "dust");
     });
     this.room.state.dust.onRemove((_d: any, id: string) => {
       this._onServerDustRemoved?.(id);
@@ -357,8 +357,8 @@ export class NetworkManager {
     this._onLobbyReset = cb;
   }
 
-  /** Called when server spawns a thrust-exhaust dust particle. Add it to the local dust array. */
-  onServerDustAdded(cb: (id: string, x: number, y: number, mass: number) => void): void {
+  /** Called when server spawns a dust particle or forms an asteroid. kind = "dust" | "asteroid". */
+  onServerDustAdded(cb: (id: string, x: number, y: number, mass: number, kind: string) => void): void {
     this._onServerDustAdded = cb;
   }
 
