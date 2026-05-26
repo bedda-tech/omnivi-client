@@ -141,6 +141,10 @@ export class NetworkManager {
   private _onRoundEnded: ((results: RoundResult[]) => void) | null = null;
   private _onLobbyState: ((state: LobbyState) => void) | null = null;
   private _onLobbyReset: (() => void) | null = null;
+  /** Fires when server spawns a new dust particle near a thrusting player. */
+  private _onServerDustAdded: ((id: string, x: number, y: number, mass: number) => void) | null = null;
+  /** Fires when a server dust particle is absorbed (by any player) or expires. */
+  private _onServerDustRemoved: ((id: string) => void) | null = null;
   /** Last server-authoritative mass for the local player (0 = not yet received). */
   private _serverMass: number = 0;
 
@@ -179,6 +183,13 @@ export class NetworkManager {
       this._onPlayerRemoved?.(sessionId);
     });
 
+    // Sync server-managed dust particles (thrust exhaust dust for mass credit)
+    this.room.state.dust.onAdd((d: any, id: string) => {
+      this._onServerDustAdded?.(id, d.x, d.y, d.mass);
+    });
+    this.room.state.dust.onRemove((_d: any, id: string) => {
+      this._onServerDustRemoved?.(id);
+    });
 
     // Server sends this after player escapes + SIGNER_PRIVATE_KEY is configured
     this.room.onMessage("claim_ready", (payload: ClaimReadyPayload) => {
@@ -282,6 +293,14 @@ export class NetworkManager {
     this.room?.send("use_ability", { type });
   }
 
+  /**
+   * Notify server that we absorbed a server-registered dust particle.
+   * Server validates proximity and credits mass. Only call with a valid server dustId.
+   */
+  sendAbsorbDust(dustId: string): void {
+    this.room?.send("absorb_dust", { dustId });
+  }
+
   sendEscaped(walletAddress?: string): void {
     this.room?.send("escaped", walletAddress ? { walletAddress } : {});
   }
@@ -336,6 +355,16 @@ export class NetworkManager {
   /** Called when server resets lobby for next round. */
   onLobbyReset(cb: () => void): void {
     this._onLobbyReset = cb;
+  }
+
+  /** Called when server spawns a thrust-exhaust dust particle. Add it to the local dust array. */
+  onServerDustAdded(cb: (id: string, x: number, y: number, mass: number) => void): void {
+    this._onServerDustAdded = cb;
+  }
+
+  /** Called when a server dust particle is absorbed or expires. Mark the local copy inactive. */
+  onServerDustRemoved(cb: (id: string) => void): void {
+    this._onServerDustRemoved = cb;
   }
 
   // ── Accessors ───────────────────────────────────────────────────────────────

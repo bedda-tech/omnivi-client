@@ -482,6 +482,18 @@ export class Main extends Phaser.Scene {
       this.serverMass = mass;
     });
 
+    // Sync server-spawned thrust dust: insert into local dust array with serverId so
+    // the absorption loop can reference it when reporting back to the server.
+    this.net?.onServerDustAdded((id, x, y, mass) => {
+      const d = new DustParticle(x, y, 0, 0, mass);
+      d.serverId = id;
+      this.dust.push(d);
+    });
+    this.net?.onServerDustRemoved((id) => {
+      const d = this.dust.find(p => p.serverId === id);
+      if (d) d.active = false;
+    });
+
     // Kill bounty: apply bonus mass and show floating label
     this.net?.onKillBounty((payload) => {
       // Apply the bonus mass to the player (server already credited it server-side)
@@ -624,16 +636,10 @@ export class Main extends Phaser.Scene {
       if (this.mouseDown) thrusting = true;
     }
 
-    // ── Apply thrust (costs mass, emits dust) ──────────────────────────
+    // ── Apply thrust (costs mass; server owns dust spawning now) ───────
     this.player.thrustingThisFrame = thrusting;
     if (thrusting) {
-      const ejected = this.player.applyThrust(dt);
-      if (ejected && this.dust.length < MAX_DUST) {
-        const d = new DustParticle(ejected.x, ejected.y, ejected.vx, ejected.vy, ejected.mass);
-        d.playerEjected = true;
-        d.playerImmuneUntil = Date.now() + 500;
-        this.dust.push(d);
-      }
+      this.player.applyThrust(dt);
     }
 
     // Thrust sound: start on press, stop on release; vary pitch with speed
@@ -833,8 +839,11 @@ export class Main extends Phaser.Scene {
         const dx = d.x - px;
         const dy = d.y - py;
         if (dx * dx + dy * dy < (pr + d.radius) * (pr + d.radius)) {
-          this.player.mass += d.mass;
-          this.net?.sendAbsorb("dust", d.mass);
+          // Only server-registered dust grants mass; client-local dust is visual only
+          if (d.serverId) {
+            this.player.mass += d.mass;
+            this.net?.sendAbsorbDust(d.serverId);
+          }
           d.active = false;
           absorbed = true;
           this.bumpCombo(1);

@@ -7,6 +7,8 @@ export class DustParticle {
   vy: number;
   mass: number;
   active: boolean = true;
+  /** Non-null when this particle was spawned by the server; required for mass credit. */
+  serverId: string | null = null;
   /** True if ejected by local player thrust; immune to player absorption for 500ms */
   playerEjected: boolean = false;
   playerImmuneUntil: number = 0;
