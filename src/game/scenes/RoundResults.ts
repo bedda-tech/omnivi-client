@@ -1,5 +1,6 @@
 import { Scene, GameObjects } from "phaser";
-import { RoundResult, TIER_INFO } from "../NetworkManager";
+import { RoundResult, TIER_INFO, ClaimReadyPayload } from "../NetworkManager";
+import { connectWallet, submitClaim } from "../blockchain/ClaimClient";
 
 export interface RoundResultsData {
   results: RoundResult[];
@@ -7,6 +8,7 @@ export interface RoundResultsData {
   playerTier: number;
   buyInTokens: number;
   timeSurvived: number;
+  claimPayload?: ClaimReadyPayload;
 }
 
 // Mass IS VI — no conversion needed
@@ -28,6 +30,10 @@ export class RoundResults extends Scene {
   private outcomePulse: number = 0;
   private outcomeText!: GameObjects.Text;
   private outcomeSurvived: boolean = false;
+
+  // Claim UI (only present when server sent a signed claim payload)
+  private claimBtn: GameObjects.Text | null = null;
+  private claimStatusText: GameObjects.Text | null = null;
 
   private readonly NEBULAE: [number, number, number, number, number][] = [
     [0.10, 0.20, 200, 0x2200aa, 0.040],
@@ -285,6 +291,11 @@ export class RoundResults extends Scene {
       .on("pointerout",   () => menuBtn.setColor("#4488ff"))
       .on("pointerdown",  () => this.scene.start("MainMenu"));
 
+    // ── Claim VI button (only when server sent a signed payload and player escaped) ──
+    if (data?.claimPayload && myResult?.phase === "escaped") {
+      this.buildClaimButton(cx, btnY - 65, data.claimPayload);
+    }
+
     this.add.text(cx, btnY + 26, "[ R ]  Rematch    [ M ]  Menu    [ ESC ]  Menu", {
       fontFamily: "monospace",
       fontSize: "11px",
@@ -295,6 +306,72 @@ export class RoundResults extends Scene {
     this.input.keyboard!.once("keydown-R",   () => this.scene.start("Lobby"));
     this.input.keyboard!.once("keydown-M",   () => this.scene.start("MainMenu"));
     this.input.keyboard!.once("keydown-ESC", () => this.scene.start("MainMenu"));
+  }
+
+  private buildClaimButton(cx: number, y: number, payload: ClaimReadyPayload): void {
+    const btnW = 240;
+    const gfx = this.add.graphics().setDepth(9);
+    gfx.fillStyle(0x220044, 0.40);
+    gfx.fillRoundedRect(cx - btnW / 2, y - 20, btnW, 40, 8);
+    gfx.lineStyle(2, 0xaa44ff, 0.70);
+    gfx.strokeRoundedRect(cx - btnW / 2, y - 20, btnW, 40, 8);
+    gfx.lineStyle(4, 0xaa44ff, 0.15);
+    gfx.strokeRoundedRect(cx - btnW / 2 - 3, y - 23, btnW + 6, 46, 10);
+
+    this.claimBtn = this.add.text(cx, y, "⬡  CLAIM VI TOKENS", {
+      fontFamily: '"Arial Black", Gadget, sans-serif',
+      fontSize: "16px",
+      color: "#cc88ff",
+      stroke: "#110022",
+      strokeThickness: 3,
+      shadow: { offsetX: 0, offsetY: 0, color: "#aa44ff", blur: 10, fill: true },
+    })
+      .setOrigin(0.5)
+      .setDepth(11)
+      .setInteractive({ useHandCursor: true })
+      .on("pointerover", () => this.claimBtn?.setColor("#ffffff"))
+      .on("pointerout",  () => this.claimBtn?.setColor("#cc88ff"))
+      .on("pointerdown", () => { if (this.claimBtn) void this.handleClaim(payload); });
+
+    const rankStr = payload.massRank ? `Rank #${payload.massRank} · ` : "";
+    this.claimStatusText = this.add.text(cx, y + 28, `${rankStr}${payload.finalMass} VI ready to claim`, {
+      fontFamily: "monospace",
+      fontSize: "10px",
+      color: "#7755aa",
+      align: "center",
+    }).setOrigin(0.5).setDepth(10);
+  }
+
+  private async handleClaim(payload: ClaimReadyPayload): Promise<void> {
+    if (!this.claimBtn) return;
+    this.claimBtn.disableInteractive().setColor("#555555").setText("⬡  CONNECTING...");
+
+    try {
+      const addr = await connectWallet();
+      if (!addr) {
+        this.claimBtn.setInteractive({ useHandCursor: true }).setColor("#cc88ff").setText("⬡  CLAIM VI TOKENS");
+        this.claimStatusText?.setText("MetaMask not found or request denied").setColor("#ff4444");
+        return;
+      }
+
+      this.claimBtn.setColor("#666666").setText("⬡  PENDING TX...");
+      this.claimStatusText?.setText("Submitting transaction to GameVault...").setColor("#ffaa44");
+
+      const txHash = await submitClaim({
+        finalMass:  payload.finalMass,
+        nonce:      payload.nonce,
+        signature:  payload.signature,
+      });
+
+      this.claimBtn.setColor("#00ff88").setText("✓  CLAIMED!");
+      this.claimStatusText?.setText(`TX: ${txHash.slice(0, 22)}...`).setColor("#00ff88");
+      console.log("[Claim] Success:", txHash);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.claimBtn?.setInteractive({ useHandCursor: true }).setColor("#cc88ff").setText("⬡  RETRY CLAIM");
+      this.claimStatusText?.setText(`Error: ${msg.slice(0, 44)}`).setColor("#ff4444");
+      console.error("[Claim] Error:", err);
+    }
   }
 
   update(_time: number, delta: number) {

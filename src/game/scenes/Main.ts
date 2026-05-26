@@ -1,6 +1,6 @@
 import Phaser from "phaser";
 import { EventBus } from "../EventBus";
-import { NetworkManager, getOrCreatePlayerName, getStoredTier, TIER_INFO, deductBuyIn, creditPayout, getViBalance } from "../NetworkManager";
+import { NetworkManager, getOrCreatePlayerName, getStoredTier, TIER_INFO, deductBuyIn, creditPayout, getViBalance, ClaimReadyPayload } from "../NetworkManager";
 import { connectWallet } from "../blockchain/ClaimClient";
 import {
   WORLD_SIZE, STARTING_MASS, MAX_SPEED, DUST_EMIT_MASS, INITIAL_DUST_COUNT, MAX_DUST, ABSORB_RATIO,
@@ -89,6 +89,8 @@ export class Main extends Phaser.Scene {
   private remoteRender = new Map<string, { renderX: number; renderY: number }>();
   /** Connected wallet address (if MetaMask available), used for on-chain claim. */
   private walletAddress: string = "";
+  /** Claim payload from server (set after escape + signer configured), forwarded to RoundResults. */
+  private claimPayload: ClaimReadyPayload | null = null;
   /** Entry tier this session (0=Quick, 1=Standard, 2=HighRoller). */
   private playerTier: number = 1;
   /** VI tokens staked this session (buy-in reference for loss-aversion HUD). */
@@ -472,8 +474,9 @@ export class Main extends Phaser.Scene {
       this.net = null;
     });
 
-    // When server sends a signed claim after escape, surface it to the React layer via DOM event
+    // When server sends a signed claim after escape, store it and surface to React layer
     this.net?.onClaimReady((payload) => {
+      this.claimPayload = payload;
       window.dispatchEvent(new CustomEvent("omnivi:claim_ready", { detail: payload }));
     });
 
@@ -526,6 +529,7 @@ export class Main extends Phaser.Scene {
           playerTier: this.playerTier,
           buyInTokens: this.buyInTokens,
           timeSurvived: Math.floor(this.gameTimer),
+          claimPayload: this.claimPayload ?? undefined,
         });
       });
     });

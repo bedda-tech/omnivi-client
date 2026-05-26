@@ -9,6 +9,7 @@ import {
   LobbyState,
   getViBalance,
 } from "../NetworkManager";
+import { connectWallet } from "../blockchain/ClaimClient";
 
 // Mass IS VI — no dollar conversion
 const ELO_KEY = "omnivi_elo";
@@ -32,6 +33,8 @@ interface OrbitalDebris {
 export class Lobby extends Scene {
   private net: NetworkManager | null = null;
   private selectedTier: number = 1;
+  private walletAddress: string = "";
+  private walletStatusText!: GameObjects.Text;
 
   // Background layers
   private starGfx!: GameObjects.Graphics;
@@ -159,7 +162,7 @@ export class Lobby extends Scene {
 
     // ── VI balance display ─────────────────────────────────────────────────────
     const bal = getViBalance();
-    this.add.text(cx, 175, `WALLET:  ${bal.toLocaleString()} VI`, {
+    this.add.text(cx, 172, `BALANCE:  ${bal.toLocaleString()} VI`, {
       fontFamily: "monospace",
       fontSize: "13px",
       color: bal >= TIER_INFO[0].viCost ? "#00ffcc" : "#ff4444",
@@ -167,6 +170,23 @@ export class Lobby extends Scene {
       strokeThickness: 1,
       align: "center",
     }).setOrigin(0.5).setDepth(10);
+
+    // ── On-chain wallet status ────────────────────────────────────────────────
+    this.walletStatusText = this.add.text(cx, 192, "CHAIN: checking...", {
+      fontFamily: "monospace",
+      fontSize: "11px",
+      color: "#334455",
+      align: "center",
+    }).setOrigin(0.5).setDepth(10);
+
+    connectWallet().then((addr) => {
+      this.walletAddress = addr;
+      if (addr) {
+        this.walletStatusText.setText(`CHAIN: ${addr.slice(0, 6)}…${addr.slice(-4)}`).setColor("#7755aa");
+      } else {
+        this.walletStatusText.setText("CHAIN: no MetaMask").setColor("#334455");
+      }
+    });
 
     // ── Tier selection label ───────────────────────────────────────────────────
     this.add.text(cx, cy - 85, "SELECT BUY-IN TIER", {
@@ -291,7 +311,7 @@ export class Lobby extends Scene {
         // Disconnect lobby connection — Main will open its own fresh connection
         this.net?.disconnect();
         this.net = null;
-        this.scene.start("Main", { tier: this.selectedTier });
+        this.scene.start("Main", { tier: this.selectedTier, walletAddress: this.walletAddress });
       });
     });
 
