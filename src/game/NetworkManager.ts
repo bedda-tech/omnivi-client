@@ -153,8 +153,8 @@ export class NetworkManager {
   }
 
   /** Join (or create) the shared "omnivi" room. Non-throwing — failures are logged. */
-  async connect(name: string = "Pilot", tier: number = 1, elo: number = 1000): Promise<void> {
-    this.room = await this.client.joinOrCreate<any>("omnivi", { name, tier, elo });
+  async connect(name: string = "Pilot", tier: number = 1, elo: number = 1000, practice: boolean = false): Promise<void> {
+    this.room = await this.client.joinOrCreate<any>("omnivi", { name, tier, elo, practice });
     this._mySessionId = this.room.sessionId;
 
     // Track remote players; also track own player for server mass corrections

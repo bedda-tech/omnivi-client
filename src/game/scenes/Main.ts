@@ -95,6 +95,8 @@ export class Main extends Phaser.Scene {
   private playerTier: number = 1;
   /** VI tokens staked this session (buy-in reference for loss-aversion HUD). */
   private buyInTokens: number = 1000;
+  /** True when entered via ?mode=practice — skips wallet and VI deduction. */
+  private practiceMode: boolean = false;
   /** Pre-connected NetworkManager passed in from Lobby scene (if joining via lobby). */
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- reserved for future lobby handoff
   declare private _initNet: NetworkManager | null;
@@ -168,7 +170,8 @@ export class Main extends Phaser.Scene {
 
   preload() {}
 
-  create() {
+  create(data?: { practiceMode?: boolean }) {
+    this.practiceMode = data?.practiceMode ?? false;
     this.cameras.main.setBounds(0, 0, WORLD_SIZE, WORLD_SIZE);
 
     // Background grid (static, drawn once)
@@ -454,22 +457,24 @@ export class Main extends Phaser.Scene {
     this.cameras.main.centerOn(this.player.x, this.player.y);
 
     // ── Wallet: request MetaMask accounts early (non-blocking) ───────
-    connectWallet().then((addr) => {
-      this.walletAddress = addr;
-      if (addr) console.log("[Wallet] Connected:", addr);
-    });
+    if (!this.practiceMode) {
+      connectWallet().then((addr) => {
+        this.walletAddress = addr;
+        if (addr) console.log("[Wallet] Connected:", addr);
+      });
+    }
 
     // ── Network: connect to Colyseus server (graceful if offline) ─────
     this.playerTier    = getStoredTier();
     this.buyInTokens   = TIER_INFO[this.playerTier].viCost;
-    deductBuyIn(this.playerTier);
+    if (!this.practiceMode) deductBuyIn(this.playerTier);
 
     this.net = new NetworkManager();
     this.net.onPlayerRemoved((id) => {
       this.nameLabels.get(id)?.destroy();
       this.nameLabels.delete(id);
     });
-    this.net.connect(getOrCreatePlayerName(), this.playerTier).catch((err: unknown) => {
+    this.net.connect(getOrCreatePlayerName(), this.playerTier, 1000, this.practiceMode).catch((err: unknown) => {
       console.warn("[Net] Server unavailable — playing offline:", err);
       this.net = null;
     });
@@ -530,6 +535,7 @@ export class Main extends Phaser.Scene {
           buyInTokens: this.buyInTokens,
           timeSurvived: Math.floor(this.gameTimer),
           claimPayload: this.claimPayload ?? undefined,
+          practiceMode: this.practiceMode,
         });
       });
     });

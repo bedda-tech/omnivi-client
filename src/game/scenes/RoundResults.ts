@@ -9,6 +9,7 @@ export interface RoundResultsData {
   buyInTokens: number;
   timeSurvived: number;
   claimPayload?: ClaimReadyPayload;
+  practiceMode?: boolean;
 }
 
 // Mass IS VI — no conversion needed
@@ -292,8 +293,35 @@ export class RoundResults extends Scene {
       .on("pointerdown",  () => this.scene.start("MainMenu"));
 
     // ── Claim VI button (only when server sent a signed payload and player escaped) ──
-    if (data?.claimPayload && myResult?.phase === "escaped") {
+    if (!data?.practiceMode && data?.claimPayload && myResult?.phase === "escaped") {
       this.buildClaimButton(cx, btnY - 65, data.claimPayload);
+    }
+
+    // ── Practice mode CTA: invite to join a staked room ──
+    if (data?.practiceMode) {
+      const ctaY = btnY - 68;
+      btnGfx.fillStyle(0x1a0033, 0.60);
+      btnGfx.fillRoundedRect(cx - 160, ctaY - 20, 320, 40, 8);
+      btnGfx.lineStyle(2, 0xcc88ff, 0.80);
+      btnGfx.strokeRoundedRect(cx - 160, ctaY - 20, 320, 40, 8);
+      const ctaBtn = this.add.text(cx, ctaY, "⬡  PLAY STAKED — win real VI tokens", {
+        fontFamily: "monospace",
+        fontSize: "13px",
+        color: "#cc88ff",
+        stroke: "#1a0033",
+        strokeThickness: 2,
+        shadow: { offsetX: 0, offsetY: 0, color: "#cc88ff", blur: 8, fill: true },
+        align: "center",
+      })
+        .setOrigin(0.5)
+        .setDepth(11)
+        .setInteractive({ useHandCursor: true })
+        .on("pointerover", () => ctaBtn.setColor("#ffffff"))
+        .on("pointerout",  () => ctaBtn.setColor("#cc88ff"))
+        .on("pointerdown", () => {
+          window.history.replaceState({}, "", "/");
+          this.scene.start("Lobby");
+        });
     }
 
     this.add.text(cx, btnY + 26, "[ R ]  Rematch    [ M ]  Menu    [ ESC ]  Menu", {

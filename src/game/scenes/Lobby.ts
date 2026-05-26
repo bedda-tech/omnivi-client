@@ -35,6 +35,7 @@ export class Lobby extends Scene {
   private selectedTier: number = 1;
   private walletAddress: string = "";
   private walletStatusText!: GameObjects.Text;
+  private practiceMode: boolean = false;
 
   // Background layers
   private starGfx!: GameObjects.Graphics;
@@ -81,6 +82,7 @@ export class Lobby extends Scene {
     const cy = H / 2;
 
     this.selectedTier = getStoredTier();
+    this.practiceMode = new URLSearchParams(window.location.search).get("mode") === "practice";
 
     // ── Static nebula layer ───────────────────────────────────────────────────
     this.nebulaGfx = this.add.graphics().setDepth(0);
@@ -146,6 +148,18 @@ export class Lobby extends Scene {
       align: "center",
     }).setOrigin(0.5).setDepth(10);
 
+    if (this.practiceMode) {
+      this.add.text(cx, 128, "PRACTICE — no crypto required", {
+        fontFamily: "monospace",
+        fontSize: "11px",
+        color: "#ffaa00",
+        stroke: "#000000",
+        strokeThickness: 2,
+        align: "center",
+        shadow: { offsetX: 0, offsetY: 0, color: "#ff8800", blur: 8, fill: true },
+      }).setOrigin(0.5).setDepth(10);
+    }
+
     // ── Separator ─────────────────────────────────────────────────────────────
     const sepGfx = this.add.graphics().setDepth(3);
     sepGfx.lineStyle(1, 0x1133aa, 0.30);
@@ -172,21 +186,23 @@ export class Lobby extends Scene {
     }).setOrigin(0.5).setDepth(10);
 
     // ── On-chain wallet status ────────────────────────────────────────────────
-    this.walletStatusText = this.add.text(cx, 192, "CHAIN: checking...", {
+    this.walletStatusText = this.add.text(cx, 192, this.practiceMode ? "CHAIN: not required" : "CHAIN: checking...", {
       fontFamily: "monospace",
       fontSize: "11px",
-      color: "#334455",
+      color: this.practiceMode ? "#ffaa00" : "#334455",
       align: "center",
     }).setOrigin(0.5).setDepth(10);
 
-    connectWallet().then((addr) => {
-      this.walletAddress = addr;
-      if (addr) {
-        this.walletStatusText.setText(`CHAIN: ${addr.slice(0, 6)}…${addr.slice(-4)}`).setColor("#7755aa");
-      } else {
-        this.walletStatusText.setText("CHAIN: no MetaMask").setColor("#334455");
-      }
-    });
+    if (!this.practiceMode) {
+      connectWallet().then((addr) => {
+        this.walletAddress = addr;
+        if (addr) {
+          this.walletStatusText.setText(`CHAIN: ${addr.slice(0, 6)}…${addr.slice(-4)}`).setColor("#7755aa");
+        } else {
+          this.walletStatusText.setText("CHAIN: no MetaMask").setColor("#334455");
+        }
+      });
+    }
 
     // ── Tier selection label ───────────────────────────────────────────────────
     this.add.text(cx, cy - 85, "SELECT BUY-IN TIER", {
@@ -311,19 +327,19 @@ export class Lobby extends Scene {
         // Disconnect lobby connection — Main will open its own fresh connection
         this.net?.disconnect();
         this.net = null;
-        this.scene.start("Main", { tier: this.selectedTier, walletAddress: this.walletAddress });
+        this.scene.start("Main", { tier: this.selectedTier, walletAddress: this.walletAddress, practiceMode: this.practiceMode });
       });
     });
 
     try {
-      await this.net.connect(name, this.selectedTier, elo);
+      await this.net.connect(name, this.selectedTier, elo, this.practiceMode);
       this.statusText.setText("Waiting for players...");
     } catch (err) {
       console.error("[Lobby] Connect failed:", err);
       this.statusText.setText("Connection failed. Playing solo.");
       this.net = null;
       this.time.delayedCall(1200, () => {
-        this.scene.start("Main", { net: null, tier: this.selectedTier });
+        this.scene.start("Main", { net: null, tier: this.selectedTier, practiceMode: this.practiceMode });
       });
     }
   }
