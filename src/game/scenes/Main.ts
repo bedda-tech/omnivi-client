@@ -70,6 +70,7 @@ export class Main extends Phaser.Scene {
   private useMouse: boolean = true;
   private useKeyboard: boolean = false;
   private useGamepad: boolean = false;
+  private useTouch: boolean = false;
 
   // ── Multiplayer ─────────────────────────────────────────────────────────
   private net: NetworkManager | null = null;
@@ -281,7 +282,7 @@ export class Main extends Phaser.Scene {
       .setDepth(20);
 
     this.add
-      .text(16, 136, "Mouse: point to aim  |  Click/Hold: thrust\nWASD / Arrow keys: rotate & thrust", {
+      .text(16, 136, "Mouse/Touch: point to aim  |  Hold: thrust\nWASD / Arrow keys: rotate & thrust", {
         fontSize: "12px",
         color: "#aaaaaa",
         stroke: "#000000",
@@ -426,7 +427,8 @@ export class Main extends Phaser.Scene {
     this.keyQ     = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.Q);
     this.keyF     = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.F);
 
-    // Mouse input
+    // Mouse / touch input
+    this.useTouch = this.sys.game.device.input.touch;
     this.pointer = this.input.activePointer;
     this.input.on("pointermove", (p: Phaser.Input.Pointer) => {
       this.pointer = p;
@@ -434,8 +436,15 @@ export class Main extends Phaser.Scene {
       this.useKeyboard = false;
       this.useGamepad = false;
     });
-    this.input.on("pointerdown", () => {
+    this.input.on("pointerdown", (p: Phaser.Input.Pointer) => {
+      this.pointer = p;
       this.mouseDown = true;
+      // On touch devices, a tap may not fire pointermove first — ensure aim mode is active
+      if (this.useTouch) {
+        this.useMouse = true;
+        this.useKeyboard = false;
+        this.useGamepad = false;
+      }
     });
     this.input.on("pointerup", () => {
       this.mouseDown = false;
