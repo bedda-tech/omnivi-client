@@ -1140,6 +1140,7 @@ export class Main extends Phaser.Scene {
         if (distFromCenter >= ESCAPE_MIN_DIST) {
           this.escaping    = true;
           this.escapeTimer = ESCAPE_DURATION;
+          this.net?.sendEscapeStart();
         } else {
           // Too close — flash a warning
           this.disruptFlash = 1.5;
@@ -1149,6 +1150,7 @@ export class Main extends Phaser.Scene {
         // Cancel escape
         this.escaping    = false;
         this.escapeTimer = 0;
+        this.net?.sendEscapeCancel();
       }
     }
 
@@ -1181,6 +1183,7 @@ export class Main extends Phaser.Scene {
     this.escapeTimer  = 0;
     this.disruptFlash = 1.2;
     this.phaseText.setText(reason).setColor("#ff4400");
+    this.net?.sendEscapeCancel();
   }
 
   // ─── Skill Abilities: Boost + Mass Eject + Shield ──────────────────────────

@@ -305,6 +305,14 @@ export class NetworkManager {
     this.room?.send("escaped", walletAddress ? { walletAddress } : {});
   }
 
+  sendEscapeStart(): void {
+    this.room?.send("escape_start", {});
+  }
+
+  sendEscapeCancel(): void {
+    this.room?.send("escape_cancel", {});
+  }
+
   sendConsumed(): void {
     this.room?.send("consumed");
   }
