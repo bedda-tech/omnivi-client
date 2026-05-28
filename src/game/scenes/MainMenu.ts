@@ -31,6 +31,7 @@ export class MainMenu extends Scene {
   private tierDescText!: GameObjects.Text;
   declare private _walletText: GameObjects.Text;
   private t: number = 0;
+  private lbGfx: GameObjects.Graphics | null = null;
 
   // Nebula config: [cx_frac, cy_frac, r, color, alpha]
   private readonly NEBULAE: [number, number, number, number, number][] = [
@@ -237,6 +238,8 @@ export class MainMenu extends Scene {
       shadow: { offsetX: 0, offsetY: 0, color: "#00aa88", blur: 6, fill: true },
     }).setOrigin(1, 0).setDepth(10);
 
+    this.fetchLeaderboard();
+
     EventBus.emit("current-scene-ready", this);
   }
 
@@ -356,5 +359,63 @@ export class MainMenu extends Scene {
 
   changeScene() {
     this.scene.start("Main");
+  }
+
+  private async fetchLeaderboard(): Promise<void> {
+    const wsUrl: string = (import.meta as any).env?.VITE_SERVER_URL ?? "ws://localhost:8000";
+    const httpUrl = wsUrl.replace(/^ws(s?):\/\//, "http$1://");
+
+    interface LBEntry { wallet: string; name: string; mass: number; timestamp: number; }
+    let entries: LBEntry[];
+    try {
+      const resp = await fetch(`${httpUrl}/leaderboard`);
+      if (!resp.ok) return;
+      entries = await resp.json() as LBEntry[];
+    } catch {
+      return;
+    }
+
+    if (!this.sys.isActive() || !entries || entries.length === 0) return;
+
+    const { width: W, height: H } = this.cameras.main;
+    const PANEL_W = 215;
+    const rowCount = Math.min(entries.length, 8);
+    const PANEL_H = 26 + rowCount * 18 + 8;
+    const panelX = W - 14 - PANEL_W;
+    const panelY = H - 14 - PANEL_H;
+
+    this.lbGfx = this.add.graphics().setDepth(10);
+    this.lbGfx.fillStyle(0x000d1a, 0.78);
+    this.lbGfx.fillRoundedRect(panelX, panelY, PANEL_W, PANEL_H, 6);
+    this.lbGfx.lineStyle(1, 0x00ccaa, 0.45);
+    this.lbGfx.strokeRoundedRect(panelX, panelY, PANEL_W, PANEL_H, 6);
+
+    this.add.text(panelX + PANEL_W / 2, panelY + 7, "TOP ESCAPEES", {
+      fontFamily: "monospace",
+      fontSize: "10px",
+      color: "#00ccaa",
+      letterSpacing: 2,
+      align: "center",
+    }).setOrigin(0.5, 0).setDepth(11);
+
+    const RANK_COLORS = ["#ffdd44", "#aaaaaa", "#cc8844"];
+    entries.slice(0, 8).forEach((entry, i) => {
+      const rowY = panelY + 23 + i * 18;
+      const rankColor = i < 3 ? RANK_COLORS[i] : "#445566";
+      const displayName = (entry.name || entry.wallet).slice(0, 13);
+      const massStr = Math.floor(entry.mass).toLocaleString();
+
+      this.add.text(panelX + 7, rowY, `${i + 1}`, {
+        fontFamily: "monospace", fontSize: "10px", color: rankColor,
+      }).setDepth(11);
+
+      this.add.text(panelX + 22, rowY, displayName, {
+        fontFamily: "monospace", fontSize: "10px", color: "#8899aa",
+      }).setDepth(11);
+
+      this.add.text(panelX + PANEL_W - 7, rowY, massStr, {
+        fontFamily: "monospace", fontSize: "10px", color: "#44eeaa", align: "right",
+      }).setOrigin(1, 0).setDepth(11);
+    });
   }
 }
