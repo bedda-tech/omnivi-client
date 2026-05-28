@@ -70,7 +70,7 @@ export const COMBO_ANNOUNCE_THRESHOLDS = [5, 10, 20, 50] as const;
 // "Omnivi" = all VI = all energy. The goal is to collect it all.
 
 // ─── AI Bots ────────────────────────────────────────────────────────────────
-export const BOT_COUNT       = 4;
+export const BOT_COUNT       = 0; // NPC bots now live server-side in OmniviRoom
 export const BOT_NAMES       = ["TITAN", "VEGA", "NOVA", "AXIOM"];
 export const BOT_COLORS      = [0xff5555, 0x55ff99, 0xffbb33, 0xbb66ff];
 export const BOT_THRUST      = 220;        // slightly weaker than player
