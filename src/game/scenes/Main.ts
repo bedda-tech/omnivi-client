@@ -152,6 +152,7 @@ export class Main extends Phaser.Scene {
   private gameTimer!: number;       // seconds elapsed since game start
   private shrinkTimer!: number;     // seconds elapsed since shrink started
   private bhMass!: number;          // black hole mass (grows during shrink)
+  private worldRadius: number = WORLD_SIZE / 2; // shrinking boundary radius (synced from server)
   private escaping!: boolean;       // player is in escape countdown
   private escapeTimer!: number;     // seconds remaining in escape countdown
   private disruptFlash!: number;    // seconds remaining for disruption red flash
@@ -220,6 +221,7 @@ export class Main extends Phaser.Scene {
     this.gameTimer      = 0;
     this.shrinkTimer    = 0;
     this.bhMass         = BH_INITIAL_MASS;
+    this.worldRadius    = WORLD_SIZE / 2;
     this.escaping       = false;
     this.escapeTimer    = 0;
     this.disruptFlash        = 0;
@@ -974,6 +976,12 @@ export class Main extends Phaser.Scene {
         console.warn(`[AntiCheat] Mass drift ${(drift * 100).toFixed(1)}%: local=${this.player.mass.toFixed(0)} server=${this.serverMass.toFixed(0)} — correcting`);
         this.player.mass = this.serverMass;
       }
+    }
+
+    // ── Sync world boundary radius from server ─────────────────────────
+    if (this.net && this.phase === 'shrinking') {
+      const swr = this.net.gameState.worldRadius;
+      if (swr > 0) this.worldRadius = swr;
     }
 
     // ── Network: send local player state at 20 Hz ──────────────────────
@@ -1731,6 +1739,19 @@ export class Main extends Phaser.Scene {
     // Draw black hole first (underneath everything)
     if (this.phase === 'shrinking' || this.phase === 'escaped' || this.phase === 'consumed') {
       this.drawBlackHole();
+    }
+
+    // ── Shrinking world boundary circle ─────────────────────────────────
+    if (this.phase === 'shrinking') {
+      const wr = this.worldRadius;
+      const t_now = this.time.now / 1000;
+      // Pulse alpha gently so it's clearly visible without obscuring gameplay
+      const boundaryPulse = 0.25 + 0.15 * Math.sin(t_now * 2.5);
+      this.gfx.lineStyle(4, 0xff2200, boundaryPulse);
+      this.gfx.strokeCircle(WORLD_SIZE / 2, WORLD_SIZE / 2, wr);
+      // Faint fill near the edge to give a "death zone" feel
+      this.gfx.lineStyle(12, 0xff2200, boundaryPulse * 0.4);
+      this.gfx.strokeCircle(WORLD_SIZE / 2, WORLD_SIZE / 2, wr + 6);
     }
 
     // ── Draw remote players (ghost players behind local) ─────────────────

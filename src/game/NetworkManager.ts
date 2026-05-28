@@ -78,6 +78,7 @@ export interface ServerGameState {
   bhX: number;
   bhY: number;
   prizePool: number;
+  worldRadius: number;
 }
 
 // ─── Default server URL (override via VITE_SERVER_URL env var) ────────────────
@@ -128,6 +129,7 @@ export class NetworkManager {
     bhX: 0,
     bhY: 0,
     prizePool: 0,
+    worldRadius: 2500,
   };
   private _onClaimReady: ((payload: ClaimReadyPayload) => void) | null = null;
   private _onPlayerAdded: ((id: string, rp: RemotePlayer) => void) | null = null;
@@ -243,6 +245,7 @@ export class NetworkManager {
         bhX: s.bhX,
         bhY: s.bhY,
         prizePool: s.prizePool ?? 0,
+        worldRadius: s.worldRadius ?? 2500,
       };
       if (s.phase === "lobby" || s.phase === "ended") {
         this._onLobbyState?.({
