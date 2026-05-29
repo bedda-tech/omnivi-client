@@ -17,6 +17,7 @@ import {
 } from "../constants";
 import { SfxManager } from "../managers/SfxManager";
 import { PhysicsManager } from "../managers/PhysicsManager";
+import type { GameOverData } from "./GameOver";
 import {
   DustParticle, Asteroid, QuadNode, Player, BotPlayer,
   type BurstParticle, type TrailPoint, type FloatLabel,
@@ -1657,6 +1658,22 @@ export class Main extends Phaser.Scene {
     this.input.keyboard!.once("keydown-M", () => {
       this.scene.start("MainMenu");
     });
+
+    // In practice mode (no server), transition to GameOver scene after a short delay
+    if (!this.net && !escaped) {
+      const absorberName = deathMessage?.startsWith("ABSORBED BY ")
+        ? deathMessage.slice("ABSORBED BY ".length)
+        : undefined;
+      const gameOverData: GameOverData = {
+        absorberName,
+        finalMass: this.player.mass,
+        buyIn: this.buyInTokens,
+        reason: absorberName ? "absorbed" : "consumed",
+      };
+      this.time.delayedCall(2500, () => {
+        if (this.scene.isActive()) this.scene.start("GameOver", gameOverData);
+      });
+    }
   }
 
   // ─── Phase HUD ─────────────────────────────────────────────────────────────
