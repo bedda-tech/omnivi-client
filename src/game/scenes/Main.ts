@@ -12,11 +12,12 @@ import {
   EJECT_MASS_MIN, EJECT_MASS_MAX, EJECT_SPEED, EJECT_COOLDOWN, CLUTCH_MASS_THRESH,
   SHIELD_MASS_COST_PCT, SHIELD_DURATION, SHIELD_COOLDOWN, COMBO_TIMEOUT,
   COMBO_ANNOUNCE_THRESHOLDS, BOT_COUNT, BOT_NAMES,
-  BOT_COLORS, massToRadius, parseHslColor,
+  BOT_COLORS, massToRadius,
   type GamePhase,
 } from "../constants";
 import { SfxManager } from "../managers/SfxManager";
 import { PhysicsManager } from "../managers/PhysicsManager";
+import { RemotePlayerManager } from "../RemotePlayerManager";
 import type { GameOverData } from "./GameOver";
 import {
   DustParticle, Asteroid, QuadNode, Player, BotPlayer,
@@ -85,10 +86,8 @@ export class Main extends Phaser.Scene {
   private serverMass: number = 0;
   /** Session IDs we've already absorbed this life — prevents double-counting. */
   private absorbedPlayers = new Set<string>();
-  /** World-space name labels for remote players, keyed by session ID. */
-  private nameLabels = new Map<string, Phaser.GameObjects.Text>();
-  /** Interpolated render positions for remote players (dead reckoning). */
-  private remoteRender = new Map<string, { renderX: number; renderY: number }>();
+  /** Manages remote player rendering, interpolation, and name labels. */
+  private remoteManager!: RemotePlayerManager;
   /** Connected wallet address (if MetaMask available), used for on-chain claim. */
   private walletAddress: string = "";
   /** Claim payload from server (set after escape + signer configured), forwarded to RoundResults. */
@@ -255,9 +254,8 @@ export class Main extends Phaser.Scene {
     this.climaxWarningFired = false;
     this.milestoneTimer = 0;
     this.lastMassMilestone = STARTING_MASS;
-    for (const lbl of this.nameLabels.values()) lbl.destroy();
-    this.nameLabels.clear();
-    this.remoteRender.clear();
+    this.remoteManager?.destroy();
+    this.remoteManager = new RemotePlayerManager(this);
     for (const lbl of this.botNameLabels.values()) lbl.destroy();
     this.botNameLabels.clear();
 
@@ -483,8 +481,7 @@ export class Main extends Phaser.Scene {
 
     this.net = new NetworkManager();
     this.net.onPlayerRemoved((id) => {
-      this.nameLabels.get(id)?.destroy();
-      this.nameLabels.delete(id);
+      this.remoteManager.removePlayer(id);
     });
     this.net.connect(getOrCreatePlayerName(), this.playerTier, 1000, this.practiceMode).catch((err: unknown) => {
       console.warn("[Net] Server unavailable — playing offline:", err);
@@ -1772,7 +1769,7 @@ export class Main extends Phaser.Scene {
     }
 
     // ── Draw remote players (ghost players behind local) ─────────────────
-    this.drawRemotePlayers(dt);
+    if (this.net) this.remoteManager.draw(dt, this.gfx, this.net.otherPlayers);
 
     // ── Draw bot players ─────────────────────────────────────────────────
     this.drawBots();
@@ -2397,87 +2394,6 @@ export class Main extends Phaser.Scene {
     }
   }
 
-  /** Render all remote players as tinted circles with name labels. */
-  private drawRemotePlayers(dt: number = 0) {
-    if (!this.net) return;
-    // Dead-reckoning interpolation: lerp render positions toward
-    // server pos + velocity * estimated network lag (50ms) each frame.
-    // This hides the 20 Hz server tick rate with smooth motion.
-    const TICK_LAG   = 0.05;  // assume ~50ms from when server sampled to when we apply it
-    const INTERP_SPD = 14;    // lerp rate — converges in ~1/14 s ≈ 70ms
-
-    const seen = new Set<string>();
-    for (const [id, rp] of this.net.otherPlayers) {
-      if (rp.phase !== "alive") continue;
-      seen.add(id);
-
-      // ── Interpolation ─────────────────────────────────────────────────
-      const deadX = rp.x + rp.vx * TICK_LAG;
-      const deadY = rp.y + rp.vy * TICK_LAG;
-      if (!this.remoteRender.has(id)) {
-        // First time we see this player: snap to position, no lerp
-        this.remoteRender.set(id, { renderX: deadX, renderY: deadY });
-      }
-      const rr = this.remoteRender.get(id)!;
-      const alpha = Math.min(dt * INTERP_SPD, 1);
-      rr.renderX += (deadX - rr.renderX) * alpha;
-      rr.renderY += (deadY - rr.renderY) * alpha;
-      const rx = rr.renderX;
-      const ry = rr.renderY;
-
-      // ── Draw ──────────────────────────────────────────────────────────
-      const r = Math.sqrt(rp.mass) * 2; // massToRadius
-      const color = parseHslColor(rp.color);
-
-      // Subtle glow
-      this.gfx.fillStyle(color, 0.08);
-      this.gfx.fillCircle(rx, ry, r * 2.0);
-
-      // Body
-      this.gfx.fillStyle(color, 0.75);
-      this.gfx.fillCircle(rx, ry, r);
-
-      // Outline
-      this.gfx.lineStyle(Math.max(1, r * 0.04), 0xffffff, 0.5);
-      this.gfx.strokeCircle(rx, ry, r);
-
-      // Thrust flash
-      if (rp.isThrusting) {
-        this.gfx.fillStyle(0xff6600, 0.35);
-        this.gfx.fillCircle(rx, ry, r * 0.4);
-      }
-
-      // Escape aura
-      if (rp.isEscaping) {
-        this.gfx.lineStyle(3, 0x00ffaa, 0.4);
-        this.gfx.strokeCircle(rx, ry, r * 1.5);
-      }
-
-      // Name label above the player circle
-      if (!this.nameLabels.has(id)) {
-        const lbl = this.add.text(0, 0, rp.name, {
-          fontSize: '13px', fontFamily: 'monospace',
-          color: '#ffffff',
-          stroke: '#000000', strokeThickness: 3,
-        }).setAlpha(0.85).setOrigin(0.5, 1).setDepth(15);
-        this.nameLabels.set(id, lbl);
-      }
-      const lbl = this.nameLabels.get(id)!;
-      lbl.setPosition(rx, ry - r - 5);
-    }
-
-    // Destroy labels + render state for players no longer visible
-    for (const [id, lbl] of this.nameLabels) {
-      if (!seen.has(id)) {
-        lbl.destroy();
-        this.nameLabels.delete(id);
-      }
-    }
-    for (const id of this.remoteRender.keys()) {
-      if (!seen.has(id)) this.remoteRender.delete(id);
-    }
-  }
-
   // ─── Minimap ───────────────────────────────────────────────────────────────
   // ─── Kill Feed ─────────────────────────────────────────────────────────────
   private pushKillFeed(msg: string, color: number = 0x00ff88) {
@@ -2548,11 +2464,7 @@ export class Main extends Phaser.Scene {
 
     // Remote players — their hue-colored dots
     if (this.net) {
-      for (const [, rp] of this.net.otherPlayers) {
-        if (rp.phase !== "alive") continue;
-        this.minimapGfx.fillStyle(parseHslColor(rp.color), 0.9);
-        this.minimapGfx.fillCircle(wx(rp.x), wy(rp.y), 3);
-      }
+      this.remoteManager.drawMinimapDots(this.minimapGfx, this.net.otherPlayers, wx, wy);
     }
 
     // Bot players — colored dots
@@ -2609,8 +2521,7 @@ export class Main extends Phaser.Scene {
   }
 
   shutdown() {
-    for (const lbl of this.nameLabels.values()) lbl.destroy();
-    this.nameLabels.clear();
+    this.remoteManager?.destroy();
     for (const lbl of this.botNameLabels.values()) lbl.destroy();
     this.botNameLabels.clear();
     this.net?.disconnect();
