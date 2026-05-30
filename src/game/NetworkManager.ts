@@ -117,10 +117,15 @@ export interface LobbyState {
   playerCount:    number;
 }
 
+const RECONNECT_MAX_ATTEMPTS = 3;
+const RECONNECT_DELAY_MS     = 3000;
+
 export class NetworkManager {
   private client: Client;
   private room: Room | null = null;
   private _mySessionId: string = "";
+  private _reconnectionToken: string = "";
+  private _intentionalLeave = false;
   private _players = new Map<string, RemotePlayer>();
   private _gameState: ServerGameState = {
     phase: "playing",
@@ -147,6 +152,8 @@ export class NetworkManager {
   private _onServerDustAdded: ((id: string, x: number, y: number, mass: number, kind: string) => void) | null = null;
   /** Fires when a server dust particle is absorbed (by any player) or expires. */
   private _onServerDustRemoved: ((id: string) => void) | null = null;
+  /** Fires after all reconnect attempts fail (unexpected disconnect). */
+  private _onDisconnected: (() => void) | null = null;
   /** Last server-authoritative mass for the local player (0 = not yet received). */
   private _serverMass: number = 0;
 
@@ -156,13 +163,20 @@ export class NetworkManager {
 
   /** Join (or create) the shared "omnivi" room. Non-throwing — failures are logged. */
   async connect(name: string = "Pilot", tier: number = 1, elo: number = 1000, practice: boolean = false): Promise<void> {
+    this._intentionalLeave = false;
     this.room = await this.client.joinOrCreate<any>("omnivi", { name, tier, elo, practice });
     this._mySessionId = this.room.sessionId;
+    this._reconnectionToken = (this.room as any).reconnectionToken ?? "";
+    this._attachHandlers(this.room);
+    this.room.onLeave((code: number) => { void this._handleLeave(code); });
+    console.log(`[Net] Joined room ${this.room.roomId} as ${this._mySessionId} (tier ${tier})`);
+  }
 
+  /** Wire all state/message handlers onto a room instance (used on initial join and after reconnect). */
+  private _attachHandlers(room: Room): void {
     // Track remote players; also track own player for server mass corrections
-    this.room.state.players.onAdd((player: any, sessionId: string) => {
+    room.state.players.onAdd((player: any, sessionId: string) => {
       if (sessionId === this._mySessionId) {
-        // Subscribe to own player state — used for server-authoritative mass reconciliation
         this._serverMass = player.mass;
         player.onChange(() => {
           if (player.mass !== this._serverMass) {
@@ -180,64 +194,59 @@ export class NetworkManager {
       });
     });
 
-    this.room.state.players.onRemove((_player: any, sessionId: string) => {
+    room.state.players.onRemove((_player: any, sessionId: string) => {
       this._players.delete(sessionId);
       this._onPlayerRemoved?.(sessionId);
     });
 
     // Sync server-managed dust particles (thrust exhaust dust for mass credit)
-    this.room.state.dust.onAdd((d: any, id: string) => {
+    room.state.dust.onAdd((d: any, id: string) => {
       this._onServerDustAdded?.(id, d.x, d.y, d.mass, d.kind ?? "dust");
     });
-    this.room.state.dust.onRemove((_d: any, id: string) => {
+    room.state.dust.onRemove((_d: any, id: string) => {
       this._onServerDustRemoved?.(id);
     });
 
-    // Server sends this after player escapes + SIGNER_PRIVATE_KEY is configured
-    this.room.onMessage("claim_ready", (payload: ClaimReadyPayload) => {
+    room.onMessage("claim_ready", (payload: ClaimReadyPayload) => {
       console.log("[Net] Claim ready:", payload);
       this._onClaimReady?.(payload);
     });
 
-    // Kill bounty: server notifies victor of bonus mass after absorbing a player
-    this.room.onMessage("kill_bounty", (payload: KillBountyPayload) => {
+    room.onMessage("kill_bounty", (payload: KillBountyPayload) => {
       console.log("[Net] Kill bounty:", payload);
       this._onKillBounty?.(payload);
     });
 
-    // Server-authoritative BH consumption: server detected player inside BH
-    this.room.onMessage("bh_consumed", () => {
+    room.onMessage("bh_consumed", () => {
       console.log("[Net] Server BH consumed this player");
       this._onBhConsumed?.();
     });
 
-    // Lobby/round lifecycle messages
-    this.room.onMessage("round_start", () => {
+    room.onMessage("round_start", () => {
       console.log("[Net] Round started");
       this._onRoundStarted?.();
     });
 
-    this.room.onMessage("round_ended", (payload: { results: RoundResult[] }) => {
+    room.onMessage("round_ended", (payload: { results: RoundResult[] }) => {
       console.log("[Net] Round ended, results:", payload.results.length);
       this._onRoundEnded?.(payload.results);
     });
 
-    this.room.onMessage("room_phase", (payload: { phase: string; lobbyCountdown: number }) => {
+    room.onMessage("room_phase", (payload: { phase: string; lobbyCountdown: number }) => {
       this._onLobbyState?.({
         phase: payload.phase,
         lobbyCountdown: payload.lobbyCountdown,
-        playerCount: this.room!.state.playerCount ?? 0,
+        playerCount: room.state.playerCount ?? 0,
       });
     });
 
-    this.room.onMessage("lobby_reset", () => {
+    room.onMessage("lobby_reset", () => {
       console.log("[Net] Lobby reset for next round");
       this._onLobbyReset?.();
     });
 
-    // Mirror lobby state changes
-    this.room.state.onChange(() => {
-      const s = this.room!.state;
+    room.state.onChange(() => {
+      const s = room.state;
       this._gameState = {
         phase: s.phase,
         shrinkTimer: s.shrinkTimer,
@@ -255,8 +264,31 @@ export class NetworkManager {
         });
       }
     });
+  }
 
-    console.log(`[Net] Joined room ${this.room.roomId} as ${this._mySessionId} (tier ${tier})`);
+  /** Handle unexpected disconnects — retry up to RECONNECT_MAX_ATTEMPTS times. */
+  private async _handleLeave(code: number): Promise<void> {
+    if (code === 1000 || this._intentionalLeave) return;
+    console.log(`[Net] Connection dropped (code ${code}), attempting reconnect...`);
+    for (let attempt = 1; attempt <= RECONNECT_MAX_ATTEMPTS; attempt++) {
+      await new Promise<void>(res => setTimeout(res, RECONNECT_DELAY_MS));
+      try {
+        console.log(`[Net] Reconnect attempt ${attempt}/${RECONNECT_MAX_ATTEMPTS}`);
+        const newRoom: Room = await (this.client as any).reconnect(this._reconnectionToken);
+        this.room = newRoom;
+        this._reconnectionToken = (newRoom as any).reconnectionToken ?? this._reconnectionToken;
+        this._mySessionId = newRoom.sessionId;
+        this._attachHandlers(newRoom);
+        newRoom.onLeave((c: number) => { void this._handleLeave(c); });
+        console.log(`[Net] Reconnected successfully on attempt ${attempt}`);
+        return;
+      } catch (e) {
+        console.warn(`[Net] Reconnect attempt ${attempt} failed:`, e);
+      }
+    }
+    console.error("[Net] Reconnect failed after all attempts — giving up");
+    this.room = null;
+    this._onDisconnected?.();
   }
 
   // ── Outbound messages ───────────────────────────────────────────────────────
@@ -378,6 +410,11 @@ export class NetworkManager {
     this._onServerDustRemoved = cb;
   }
 
+  /** Called after all reconnect attempts fail. Use to navigate to GameOver/Lobby. */
+  onDisconnected(cb: () => void): void {
+    this._onDisconnected = cb;
+  }
+
   // ── Accessors ───────────────────────────────────────────────────────────────
 
   get mySessionId(): string { return this._mySessionId; }
@@ -388,6 +425,7 @@ export class NetworkManager {
   get serverMass(): number { return this._serverMass; }
 
   disconnect(): void {
+    this._intentionalLeave = true;
     this.room?.leave();
     this.room = null;
     this._players.clear();
