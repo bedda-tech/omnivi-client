@@ -20,6 +20,7 @@ export class MainMenu extends Scene {
   title!: GameObjects.Text;
   subtitle!: GameObjects.Text;
   playBtn!: GameObjects.Text;
+  practiceBtn!: GameObjects.Text;
   private starGfx!: GameObjects.Graphics;
   private nebulaGfx!: GameObjects.Graphics;
   private tierGfx!: GameObjects.Graphics;
@@ -206,6 +207,33 @@ export class MainMenu extends Scene {
         this.playBtn.setShadow(0, 0, "#00ff88", 16, true, true);
       })
       .on("pointerdown", () => this.changeScene());
+
+    // ── Practice mode button ──────────────────────────────────────────────────
+    this.practiceBtn = this.add
+      .text(cx, cy + 170, "◇  FREE PLAY", {
+        fontFamily: '"Arial Black", Gadget, sans-serif',
+        fontSize: "15px",
+        color: "#00ccaa",
+        stroke: "#002211",
+        strokeThickness: 3,
+        shadow: { offsetX: 0, offsetY: 0, color: "#00ccaa", blur: 10, stroke: true, fill: true },
+        align: "center",
+      })
+      .setOrigin(0.5)
+      .setDepth(11)
+      .setInteractive({ useHandCursor: true })
+      .on("pointerover", () => {
+        this.practiceBtn.setStyle({ color: "#ffffff" });
+        this.practiceBtn.setShadow(0, 0, "#00ccaa", 18, true, true);
+      })
+      .on("pointerout", () => {
+        this.practiceBtn.setStyle({ color: "#00ccaa" });
+        this.practiceBtn.setShadow(0, 0, "#00ccaa", 10, true, true);
+      })
+      .on("pointerdown", () => {
+        history.replaceState(null, "", "?mode=practice");
+        this.scene.start("Lobby");
+      });
 
     // ── Controls hint ─────────────────────────────────────────────────────────
     this.add
