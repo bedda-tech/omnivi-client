@@ -283,7 +283,7 @@ export class Main extends Phaser.Scene {
       .setDepth(20);
 
     this.add
-      .text(16, 136, "Mouse/Touch: point to aim  |  Hold: thrust\nWASD / Arrow keys: rotate & thrust", {
+      .text(16, 136, "Mouse/Touch: point to aim  |  Hold: thrust\nWASD / Arrow keys: rotate & thrust\nShift: boost  |  Q: eject mass  |  E: begin escape  |  F: shield", {
         fontSize: "12px",
         color: "#aaaaaa",
         stroke: "#000000",
