@@ -98,16 +98,6 @@ export class Main extends Phaser.Scene {
   private buyInTokens: number = 1000;
   /** True when entered via ?mode=practice — skips wallet and VI deduction. */
   private practiceMode: boolean = false;
-  /** Pre-connected NetworkManager passed in from Lobby scene (if joining via lobby). */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- reserved for future lobby handoff
-  declare private _initNet: NetworkManager | null;
-  /** True after player died but round still ongoing — watching other players. */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- future spectator mode
-  declare private _spectatorMode: boolean;
-  /** Spectator overlay text elements */
-  declare private _spectatorText: Phaser.GameObjects.Text;
-  declare private _roundResultsOverlay: Phaser.GameObjects.Graphics;
-
   // ── Sound ────────────────────────────────────────────────────────────────
   private sfx!: SfxManager;
   private wasThrusting: boolean = false;
@@ -124,7 +114,6 @@ export class Main extends Phaser.Scene {
   private killStreak: number = 0;         // consecutive kills before dying
   private killStreakTimer: number = 0;    // decay timer — resets streak after inactivity
   private pvpKills: number = 0;          // total kills this round (players + bots)
-  declare private _roundResultsPlaceholder: unknown; // reserved
   private milestoneText!: Phaser.GameObjects.Text;  // center-screen mass milestone pop
   private milestoneTimer: number = 0;    // how long to display the milestone label
   private lastMassMilestone: number = 0; // last mass threshold announced
