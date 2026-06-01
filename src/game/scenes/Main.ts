@@ -1755,6 +1755,10 @@ export class Main extends Phaser.Scene {
       // Faint fill near the edge to give a "death zone" feel
       this.gfx.lineStyle(12, 0xff2200, boundaryPulse * 0.4);
       this.gfx.strokeCircle(WORLD_SIZE / 2, WORLD_SIZE / 2, wr + 6);
+      // Escape zone ring — green ring shows the minimum distance needed to begin escaping
+      const escapeRingAlpha = 0.18 + 0.10 * Math.sin(t_now * 1.2);
+      this.gfx.lineStyle(2, 0x00ff88, escapeRingAlpha);
+      this.gfx.strokeCircle(WORLD_SIZE / 2, WORLD_SIZE / 2, ESCAPE_MIN_DIST);
     }
 
     // ── Draw remote players (ghost players behind local) ─────────────────
