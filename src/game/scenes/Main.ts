@@ -1036,8 +1036,12 @@ export class Main extends Phaser.Scene {
       `Pool:    ${prizePool} VI staked`,
     ];
     if (this.spawnProtectTimer > 0) {
-      hudLines.push(`SHIELD:   ${this.spawnProtectTimer.toFixed(1)}s`);
+      hudLines.push(`SPAWN SHIELD: ${this.spawnProtectTimer.toFixed(1)}s`);
     }
+    const cdBoost  = this.boostCooldown  > 0 ? `${this.boostCooldown.toFixed(1)}s`  : "READY";
+    const cdEject  = this.ejectCooldown  > 0 ? `${this.ejectCooldown.toFixed(1)}s`  : "READY";
+    const cdShield = this.shieldCooldown > 0 ? `${this.shieldCooldown.toFixed(1)}s` : "READY";
+    hudLines.push(`Shift:${cdBoost}  Q:${cdEject}  F:${cdShield}`);
     // Loss aversion: turn HUD red when below buy-in, green when profiting
     this.massText.setColor(losing ? "#ff3333" : deltaVI > 0 ? "#00ff88" : "#ffffff");
     this.massText.setText(hudLines.join("\n"));
