@@ -155,6 +155,11 @@ export class Main extends Phaser.Scene {
   private roundTimerText!: Phaser.GameObjects.Text;
   private bhCameraShakeCooldown: number = 0;    // throttle camera shakes during shrink
 
+  // ── Waiting-phase overlay (joined while server is in 'ended' phase) ─────
+  private _inputFrozen: boolean = false;
+  private _waitingOverlayGfx!: Phaser.GameObjects.Graphics;
+  private _waitingOverlayText!: Phaser.GameObjects.Text;
+
   constructor() {
     super("Main");
   }
@@ -206,6 +211,7 @@ export class Main extends Phaser.Scene {
     }
 
     // ── Game state (reset on restart) ──────────────────────────────────
+    this._inputFrozen    = false;
     this.phase          = 'playing';
     this.gameTimer      = 0;
     this.shrinkTimer    = 0;
@@ -379,6 +385,13 @@ export class Main extends Phaser.Scene {
     // Minimap — screen-space overlay, bottom-right
     this.minimapGfx = this.add.graphics().setScrollFactor(0).setDepth(22);
 
+    // Waiting-phase overlay — shown when joining during 'ended' phase
+    this._waitingOverlayGfx = this.add.graphics().setScrollFactor(0).setDepth(25).setVisible(false);
+    this._waitingOverlayText = this.add.text(
+      this.scale.width / 2, this.scale.height / 2, "",
+      { fontSize: "28px", fontFamily: "monospace", color: "#00ff88", stroke: "#000000", strokeThickness: 4, align: "center" }
+    ).setScrollFactor(0).setDepth(26).setOrigin(0.5).setVisible(false);
+
     // Leaderboard — top-right, right-anchored
     this.leaderboardText = this.add
       .text(this.scale.width - 14, 14, "", {
@@ -521,6 +534,26 @@ export class Main extends Phaser.Scene {
       );
     });
 
+    // Joined during 'ended' phase: freeze input and show countdown overlay
+    this.net?.onLobbyState((state) => {
+      if (state.phase === 'ended') {
+        this._inputFrozen = true;
+        this._waitingOverlayGfx.clear();
+        this._waitingOverlayGfx.fillStyle(0x000000, 0.75);
+        this._waitingOverlayGfx.fillRect(0, 0, this.scale.width, this.scale.height);
+        this._waitingOverlayGfx.setVisible(true);
+        const secs = Math.max(0, Math.ceil(state.lobbyCountdown));
+        this._waitingOverlayText.setText(`Next round starting in ${secs}s`).setVisible(true);
+      }
+    });
+
+    // Round started: unfreeze input and hide overlay
+    this.net?.onRoundStarted(() => {
+      this._inputFrozen = false;
+      this._waitingOverlayGfx.setVisible(false);
+      this._waitingOverlayText.setVisible(false);
+    });
+
     // When server signals round end, navigate to the polished RoundResults scene
     this.net?.onRoundEnded((results) => {
       // Delay so player can read their local end screen before transitioning
@@ -600,6 +633,12 @@ export class Main extends Phaser.Scene {
     if (this.phase === 'escaped' || this.phase === 'consumed') {
       this.updateJuice(dt); // keep particles / labels animating on end screen
       this.drawVignette();
+      this.drawScene(dt);
+      return;
+    }
+
+    // ── Waiting phase: joined during ended phase — render world but no input ─
+    if (this._inputFrozen) {
       this.drawScene(dt);
       return;
     }
