@@ -17,6 +17,7 @@ import {
 } from "../constants";
 import { SfxManager } from "../managers/SfxManager";
 import { PhysicsManager } from "../managers/PhysicsManager";
+import { InputManager } from "../managers/InputManager";
 import { RemotePlayerManager } from "../RemotePlayerManager";
 import type { GameOverData } from "./GameOver";
 import {
@@ -55,24 +56,7 @@ export class Main extends Phaser.Scene {
   private leaderboardText!: Phaser.GameObjects.Text; // top-right mass ranking
 
   // Input
-  private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
-  private keyW!: Phaser.Input.Keyboard.Key;
-  private keyA!: Phaser.Input.Keyboard.Key;
-  private keyS!: Phaser.Input.Keyboard.Key;
-  private keyD!: Phaser.Input.Keyboard.Key;
-  private keyE!: Phaser.Input.Keyboard.Key;           // initiate escape
-  private keyShift!: Phaser.Input.Keyboard.Key;       // boost burst
-  private keyQ!: Phaser.Input.Keyboard.Key;           // mass eject
-  private keyF!: Phaser.Input.Keyboard.Key;           // shield
-  private pointer!: Phaser.Input.Pointer;
-  private mouseDown: boolean = false;
-  private gamepad: Phaser.Input.Gamepad.Gamepad | null = null;
-
-  // Input mode
-  private useMouse: boolean = true;
-  private useKeyboard: boolean = false;
-  private useGamepad: boolean = false;
-  private useTouch: boolean = false;
+  private inputMgr!: InputManager;
 
   // ── Multiplayer ─────────────────────────────────────────────────────────
   private net: NetworkManager | null = null;
@@ -419,50 +403,8 @@ export class Main extends Phaser.Scene {
       this.leaderboardText.setX(gameSize.width - 14);
     });
 
-    // Keyboard input
-    this.cursors = this.input.keyboard!.createCursorKeys();
-    this.keyW = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.W);
-    this.keyA = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.A);
-    this.keyS = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.S);
-    this.keyD = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.D);
-    this.keyE     = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.E);
-    this.keyShift = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
-    this.keyQ     = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.Q);
-    this.keyF     = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.F);
-
-    // Mouse / touch input
-    this.useTouch = this.sys.game.device.input.touch;
-    this.pointer = this.input.activePointer;
-    this.input.on("pointermove", (p: Phaser.Input.Pointer) => {
-      this.pointer = p;
-      this.useMouse = true;
-      this.useKeyboard = false;
-      this.useGamepad = false;
-    });
-    this.input.on("pointerdown", (p: Phaser.Input.Pointer) => {
-      this.pointer = p;
-      this.mouseDown = true;
-      // On touch devices, a tap may not fire pointermove first — ensure aim mode is active
-      if (this.useTouch) {
-        this.useMouse = true;
-        this.useKeyboard = false;
-        this.useGamepad = false;
-      }
-    });
-    this.input.on("pointerup", () => {
-      this.mouseDown = false;
-    });
-
-    // Gamepad input
-    this.input.gamepad?.once(
-      Phaser.Input.Gamepad.Events.CONNECTED,
-      (pad: Phaser.Input.Gamepad.Gamepad) => {
-        this.gamepad = pad;
-        this.useGamepad = true;
-        this.useMouse = false;
-        this.useKeyboard = false;
-      }
-    );
+    // Input — keyboard, mouse/touch, gamepad
+    this.inputMgr = new InputManager(this);
 
     // Initial camera
     this.cameras.main.setZoom(1);
@@ -643,54 +585,13 @@ export class Main extends Phaser.Scene {
       return;
     }
 
-    // ── Determine input mode ────────────────────────────────────────────
-    const keyLeft = this.cursors.left?.isDown || this.keyA.isDown;
-    const keyRight = this.cursors.right?.isDown || this.keyD.isDown;
-    const keyUp = this.cursors.up?.isDown || this.keyW.isDown;
-    const keyDown = this.cursors.down?.isDown || this.keyS.isDown;
-    const anyKey = keyLeft || keyRight || keyUp || keyDown;
-
-    if (anyKey) {
-      this.useKeyboard = true;
-      this.useMouse = false;
-      this.useGamepad = false;
-    }
-
     // ── Compute aim direction and thrust intent ─────────────────────────
-    let thrusting = false;
-
-    if (this.useKeyboard) {
-      if (keyLeft) this.player.rotation -= 2.2 * dt;
-      if (keyRight) this.player.rotation += 2.2 * dt;
-      if (keyUp) thrusting = true;
-      if (keyDown) {
-        // Brake: apply thrust backward
-        this.player.rotation += Math.PI;
-        thrusting = true;
-        this.player.rotation -= Math.PI;
-      }
-      if (keyUp) thrusting = true;
+    const mv = this.inputMgr.getMovement(this.player.x, this.player.y, dt);
+    this.player.rotation += mv.rotDelta;
+    if (mv.dx !== 0 || mv.dy !== 0) {
+      this.player.rotation = Math.atan2(mv.dy, mv.dx);
     }
-
-    if (this.useGamepad && this.gamepad) {
-      const lx = this.gamepad.leftStick?.x ?? 0;
-      const ly = this.gamepad.leftStick?.y ?? 0;
-      const rt = (this.gamepad as any).R2 ?? 0;
-      if (Math.hypot(lx, ly) > 0.1) {
-        this.player.rotation = Math.atan2(ly, lx);
-      }
-      if (rt > 0.1) thrusting = true;
-    }
-
-    if (this.useMouse) {
-      this.player.rotation = Phaser.Math.Angle.Between(
-        this.player.x,
-        this.player.y,
-        this.pointer.worldX,
-        this.pointer.worldY
-      );
-      if (this.mouseDown) thrusting = true;
-    }
+    const thrusting = mv.thrusting;
 
     // ── Apply thrust (costs mass; server owns dust spawning now) ───────
     this.player.thrustingThisFrame = thrusting;
@@ -1169,7 +1070,7 @@ export class Main extends Phaser.Scene {
   // ─── Escape Sequence Update ────────────────────────────────────────────────
   private updateEscape(dt: number) {
     // E key: start or cancel escape
-    if (Phaser.Input.Keyboard.JustDown(this.keyE)) {
+    if (this.inputMgr.getActions().escape) {
       if (!this.escaping) {
         const distFromCenter = Math.hypot(
           this.player.x - WORLD_SIZE / 2,
@@ -1244,7 +1145,7 @@ export class Main extends Phaser.Scene {
     this.shieldCooldown = Math.max(0, this.shieldCooldown - dt);
 
     // BOOST BURST — Shift key: spend 5% mass for a velocity impulse
-    if (Phaser.Input.Keyboard.JustDown(this.keyShift)) {
+    if (this.inputMgr.getActions().boost) {
       if (this.boostCooldown <= 0 && this.player.mass > 100) {
         const massCost = Math.max(15, this.player.mass * BOOST_MASS_COST_PCT);
         this.player.mass = Math.max(15, this.player.mass - massCost);
@@ -1261,7 +1162,7 @@ export class Main extends Phaser.Scene {
     }
 
     // MASS EJECT — Q key: eject 10% mass as fast projectile
-    if (Phaser.Input.Keyboard.JustDown(this.keyQ)) {
+    if (this.inputMgr.getActions().eject) {
       if (this.ejectCooldown <= 0 && this.player.mass > 80) {
         const ejMass = Phaser.Math.Clamp(
           this.player.mass * EJECT_MASS_PCT,
@@ -1302,7 +1203,7 @@ export class Main extends Phaser.Scene {
     }
 
     // SHIELD — F key: spend 8% mass for 2.5s of invulnerability
-    if (Phaser.Input.Keyboard.JustDown(this.keyF)) {
+    if (this.inputMgr.getActions().shield) {
       if (this.shieldCooldown <= 0 && this.player.mass > 80) {
         const massCost = Math.max(10, this.player.mass * SHIELD_MASS_COST_PCT);
         this.player.mass = Math.max(15, this.player.mass - massCost);
