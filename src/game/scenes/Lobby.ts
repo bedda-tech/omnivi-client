@@ -9,7 +9,7 @@ import {
   LobbyState,
   getViBalance,
 } from "../NetworkManager";
-import { connectWallet } from "../blockchain/ClaimClient";
+import { connectWallet, approveAndStake } from "../blockchain/ClaimClient";
 
 // Mass IS VI — no dollar conversion
 const ELO_KEY = "omnivi_elo";
@@ -322,13 +322,7 @@ export class Lobby extends Scene {
       this.roundStarting = true;
       this.statusText.setText("ROUND STARTING!").setColor("#00ff88");
       this.countdownText.setVisible(false);
-
-      this.time.delayedCall(400, () => {
-        // Disconnect lobby connection — Main will open its own fresh connection
-        this.net?.disconnect();
-        this.net = null;
-        this.scene.start("Main", { tier: this.selectedTier, walletAddress: this.walletAddress, practiceMode: this.practiceMode });
-      });
+      void this._enterRound();
     });
 
     try {
@@ -342,6 +336,31 @@ export class Lobby extends Scene {
         this.scene.start("Main", { net: null, tier: this.selectedTier, practiceMode: this.practiceMode });
       });
     }
+  }
+
+  private async _enterRound(): Promise<void> {
+    // Attempt on-chain stake when contracts are configured and wallet is connected
+    const vaultAddr: string = (import.meta as any).env?.VITE_GAME_VAULT_ADDRESS ?? "";
+    if (!this.practiceMode && this.walletAddress && vaultAddr) {
+      this.statusText.setText("Staking... (check MetaMask)").setColor("#ffaa00");
+      try {
+        await approveAndStake(this.selectedTier);
+        this.statusText.setText("Staked! Entering round...").setColor("#00ff88");
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[Lobby] Stake failed:", msg);
+        // Hard-fail: reset so player knows they didn't stake
+        this.statusText.setText(`Stake failed — ${msg.slice(0, 60)}`).setColor("#ff4444");
+        this.roundStarting = false;
+        return;
+      }
+    }
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 400));
+    // Disconnect lobby connection — Main will open its own fresh connection
+    this.net?.disconnect();
+    this.net = null;
+    this.scene.start("Main", { tier: this.selectedTier, walletAddress: this.walletAddress, practiceMode: this.practiceMode });
   }
 
   private updateLobbyUI(): void {
