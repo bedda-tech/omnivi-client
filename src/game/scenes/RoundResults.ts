@@ -1,6 +1,6 @@
 import { Scene, GameObjects } from "phaser";
 import { RoundResult, TIER_INFO, ClaimReadyPayload } from "../NetworkManager";
-import { connectWallet, submitClaim } from "../blockchain/ClaimClient";
+import { connectWallet, submitClaim, submitRestake } from "../blockchain/ClaimClient";
 
 export interface RoundResultsData {
   results: RoundResult[];
@@ -35,6 +35,8 @@ export class RoundResults extends Scene {
   // Claim UI (only present when server sent a signed claim payload)
   private claimBtn: GameObjects.Text | null = null;
   private claimStatusText: GameObjects.Text | null = null;
+  private restakeBtn: GameObjects.Text | null = null;
+  private restakeStatusText: GameObjects.Text | null = null;
 
   private readonly NEBULAE: [number, number, number, number, number][] = [
     [0.10, 0.20, 200, 0x2200aa, 0.040],
@@ -294,7 +296,8 @@ export class RoundResults extends Scene {
 
     // ── Claim VI button (only when server sent a signed payload and player escaped) ──
     if (!data?.practiceMode && data?.claimPayload && myResult?.phase === "escaped") {
-      this.buildClaimButton(cx, btnY - 65, data.claimPayload);
+      this.buildClaimButton(cx - 145, btnY - 65, data.claimPayload);
+      this.buildRestakeButton(cx + 135, btnY - 65, data.claimPayload, data.playerTier ?? 1);
     }
 
     // ── Practice mode CTA: invite to join a staked room ──
@@ -399,6 +402,73 @@ export class RoundResults extends Scene {
       this.claimBtn?.setInteractive({ useHandCursor: true }).setColor("#cc88ff").setText("⬡  RETRY CLAIM");
       this.claimStatusText?.setText(`Error: ${msg.slice(0, 44)}`).setColor("#ff4444");
       console.error("[Claim] Error:", err);
+    }
+  }
+
+  private buildRestakeButton(cx: number, y: number, payload: ClaimReadyPayload, tier: number): void {
+    const btnW = 260;
+    const gfx = this.add.graphics().setDepth(9);
+    gfx.fillStyle(0x003322, 0.40);
+    gfx.fillRoundedRect(cx - btnW / 2, y - 20, btnW, 40, 8);
+    gfx.lineStyle(2, 0x00ccaa, 0.70);
+    gfx.strokeRoundedRect(cx - btnW / 2, y - 20, btnW, 40, 8);
+    gfx.lineStyle(4, 0x00ccaa, 0.15);
+    gfx.strokeRoundedRect(cx - btnW / 2 - 3, y - 23, btnW + 6, 46, 10);
+
+    this.restakeBtn = this.add.text(cx, y, "⬡  CLAIM & PLAY AGAIN", {
+      fontFamily: '"Arial Black", Gadget, sans-serif',
+      fontSize: "14px",
+      color: "#00ccaa",
+      stroke: "#001a13",
+      strokeThickness: 3,
+      shadow: { offsetX: 0, offsetY: 0, color: "#00ccaa", blur: 10, fill: true },
+    })
+      .setOrigin(0.5)
+      .setDepth(11)
+      .setInteractive({ useHandCursor: true })
+      .on("pointerover", () => this.restakeBtn?.setColor("#ffffff"))
+      .on("pointerout",  () => this.restakeBtn?.setColor("#00ccaa"))
+      .on("pointerdown", () => { if (this.restakeBtn) void this.handleRestake(payload, tier); });
+
+    this.restakeStatusText = this.add.text(cx, y + 28, "Claim + re-enter queue in one tx", {
+      fontFamily: "monospace",
+      fontSize: "10px",
+      color: "#008877",
+      align: "center",
+    }).setOrigin(0.5).setDepth(10);
+  }
+
+  private async handleRestake(payload: ClaimReadyPayload, tier: number): Promise<void> {
+    if (!this.restakeBtn) return;
+    this.restakeBtn.disableInteractive().setColor("#555555").setText("⬡  CONNECTING...");
+
+    try {
+      const addr = await connectWallet();
+      if (!addr) {
+        this.restakeBtn.setInteractive({ useHandCursor: true }).setColor("#00ccaa").setText("⬡  CLAIM & PLAY AGAIN");
+        this.restakeStatusText?.setText("MetaMask not found or request denied").setColor("#ff4444");
+        return;
+      }
+
+      this.restakeBtn.setColor("#666666").setText("⬡  PENDING TX...");
+      this.restakeStatusText?.setText("Submitting restake to GameVault...").setColor("#ffaa44");
+
+      const txHash = await submitRestake({
+        finalMass:  payload.finalMass,
+        nonce:      payload.nonce,
+        signature:  payload.signature,
+      }, tier);
+
+      this.restakeBtn.setColor("#00ff88").setText("✓  STAKED! ENTERING LOBBY...");
+      this.restakeStatusText?.setText(`TX: ${txHash.slice(0, 22)}...`).setColor("#00ff88");
+      console.log("[Restake] Success:", txHash);
+
+      this.time.delayedCall(1200, () => { this.scene.start("Lobby"); });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.restakeBtn?.setInteractive({ useHandCursor: true }).setColor("#00ccaa").setText("⬡  RETRY RESTAKE");
+      this.restakeStatusText?.setText(`Error: ${msg.slice(0, 44)}`).setColor("#ff4444");
+      console.error("[Restake] Error:", err);
     }
   }
 
