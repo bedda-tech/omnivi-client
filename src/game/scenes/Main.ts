@@ -18,18 +18,13 @@ import {
 import { SfxManager } from "../managers/SfxManager";
 import { PhysicsManager } from "../managers/PhysicsManager";
 import { InputManager } from "../managers/InputManager";
+import { HUDManager } from "../managers/HUDManager";
 import { RemotePlayerManager } from "../RemotePlayerManager";
 import type { GameOverData } from "./GameOver";
 import {
   DustParticle, Asteroid, QuadNode, Player, BotPlayer,
   type BurstParticle, type TrailPoint, type FloatLabel,
 } from "../entities";
-
-interface KillFeedEntry {
-  msg: string;
-  life: number;   // seconds remaining
-  color: number;  // 0xRRGGBB
-}
 
 // ─── Main Scene ────────────────────────────────────────────────────────────
 export class Main extends Phaser.Scene {
@@ -42,18 +37,10 @@ export class Main extends Phaser.Scene {
 
   // Rendering
   private gfx!: Phaser.GameObjects.Graphics;
-  private gridGfx!: Phaser.GameObjects.Graphics;
   private vignetteGfx!: Phaser.GameObjects.Graphics;  // screen-space overlay
 
-  // HUD
-  private massText!: Phaser.GameObjects.Text;
-  private phaseText!: Phaser.GameObjects.Text;        // phase/escape status (center-top)
-  private endText!: Phaser.GameObjects.Text;
-  private statsText!: Phaser.GameObjects.Text;
-  private restartText!: Phaser.GameObjects.Text;
-  private menuKeyText!: Phaser.GameObjects.Text;
-  private minimapGfx!: Phaser.GameObjects.Graphics;  // screen-space minimap overlay
-  private leaderboardText!: Phaser.GameObjects.Text; // top-right mass ranking
+  // HUD manager — owns all HUD text/graphics objects
+  private hud!: HUDManager;
 
   // Input
   private inputMgr!: InputManager;
@@ -98,8 +85,6 @@ export class Main extends Phaser.Scene {
   private killStreak: number = 0;         // consecutive kills before dying
   private killStreakTimer: number = 0;    // decay timer — resets streak after inactivity
   private pvpKills: number = 0;          // total kills this round (players + bots)
-  private milestoneText!: Phaser.GameObjects.Text;  // center-screen mass milestone pop
-  private milestoneTimer: number = 0;    // how long to display the milestone label
   private lastMassMilestone: number = 0; // last mass threshold announced
 
   // ── Skill ability state ──────────────────────────────────────────────
@@ -109,10 +94,6 @@ export class Main extends Phaser.Scene {
   private shieldCooldown: number = 0; // seconds until shield is usable again
 
   private slingshotCooldown: number = 0; // prevents spam gravity-assist label
-
-  // ── Kill feed ────────────────────────────────────────────────────────
-  private killFeedEntries: KillFeedEntry[] = [];
-  private killFeedTexts: Phaser.GameObjects.Text[] = [];
 
   // ── Absorption combo ─────────────────────────────────────────────────
   private absorbCombo: number = 0;                     // current combo count
@@ -136,13 +117,10 @@ export class Main extends Phaser.Scene {
   private warningFlashColor: number = 0xff8800; // color of current warning flash
   private climaxWarningFired: boolean = false;  // one-shot: final 30s climax announcement
   private warnedAt = new Set<number>();          // WARN_SECONDS values already triggered
-  private roundTimerText!: Phaser.GameObjects.Text;
   private bhCameraShakeCooldown: number = 0;    // throttle camera shakes during shrink
 
   // ── Waiting-phase overlay (joined while server is in 'ended' phase) ─────
   private _inputFrozen: boolean = false;
-  private _waitingOverlayGfx!: Phaser.GameObjects.Graphics;
-  private _waitingOverlayText!: Phaser.GameObjects.Text;
 
   constructor() {
     super("Main");
@@ -154,9 +132,9 @@ export class Main extends Phaser.Scene {
     this.practiceMode = data?.practiceMode ?? false;
     this.cameras.main.setBounds(0, 0, WORLD_SIZE, WORLD_SIZE);
 
-    // Background grid (static, drawn once)
-    this.gridGfx = this.add.graphics();
-    this.drawGrid();
+    // HUD manager — creates grid, minimap, text overlays, kill feed
+    this.hud = new HUDManager(this);
+    this.hud.create(this.scale.width, this.scale.height);
 
     // Main dynamic graphics
     this.gfx = this.add.graphics();
@@ -231,7 +209,6 @@ export class Main extends Phaser.Scene {
     this.warnedAt = new Set();
     this.bhCameraShakeCooldown = 0;
     this.climaxWarningFired = false;
-    this.milestoneTimer = 0;
     this.lastMassMilestone = STARTING_MASS;
     this.remoteManager?.destroy();
     this.remoteManager = new RemotePlayerManager(this);
@@ -248,160 +225,6 @@ export class Main extends Phaser.Scene {
       const bmass = 200 + Math.random() * 600; // 200–800 (smaller than player's 1000)
       this.bots.push(new BotPlayer(bx, by, bmass, BOT_COLORS[i], BOT_NAMES[i]));
     }
-
-    // HUD elements — setScrollFactor(0) pins them to the screen
-    this.massText = this.add
-      .text(16, 16, "", {
-        fontSize: "16px",
-        color: "#ffffff",
-        stroke: "#000000",
-        strokeThickness: 3,
-        lineSpacing: 4,
-      })
-      .setScrollFactor(0)
-      .setDepth(20);
-
-    this.add
-      .text(16, 136, "Mouse/Touch: point to aim  |  Hold: thrust\nWASD / Arrow keys: rotate & thrust\nShift: boost  |  Q: eject mass  |  E: begin escape  |  F: shield", {
-        fontSize: "12px",
-        color: "#aaaaaa",
-        stroke: "#000000",
-        strokeThickness: 2,
-      })
-      .setScrollFactor(0)
-      .setDepth(20);
-
-    // Phase/escape status — centered at top
-    this.phaseText = this.add
-      .text(this.scale.width / 2, 12, "", {
-        fontSize: "15px",
-        color: "#ffcc00",
-        stroke: "#000000",
-        strokeThickness: 3,
-        align: "center",
-      })
-      .setScrollFactor(0)
-      .setDepth(20)
-      .setOrigin(0.5, 0);
-
-    // Round countdown timer — below phaseText, always visible during playing
-    this.roundTimerText = this.add
-      .text(this.scale.width / 2, 38, "", {
-        fontSize: "13px",
-        color: "#888888",
-        stroke: "#000000",
-        strokeThickness: 2,
-        fontFamily: "monospace",
-      })
-      .setScrollFactor(0)
-      .setDepth(20)
-      .setOrigin(0.5, 0);
-
-    // End-screen overlay elements (hidden until game ends)
-    this.endText = this.add
-      .text(this.scale.width / 2, 210, "", {
-        fontFamily: "Arial Black",
-        fontSize: "44px",
-        color: "#ffffff",
-        stroke: "#000000",
-        strokeThickness: 6,
-        align: "center",
-      })
-      .setScrollFactor(0)
-      .setDepth(30)
-      .setOrigin(0.5)
-      .setVisible(false);
-
-    this.statsText = this.add
-      .text(this.scale.width / 2, 300, "", {
-        fontFamily: "monospace",
-        fontSize: "18px",
-        color: "#dddddd",
-        stroke: "#000000",
-        strokeThickness: 3,
-        align: "center",
-        lineSpacing: 6,
-      })
-      .setScrollFactor(0)
-      .setDepth(30)
-      .setOrigin(0.5)
-      .setVisible(false);
-
-    this.restartText = this.add
-      .text(this.scale.width / 2, 405, "[ R ]  Play Again", {
-        fontSize: "20px",
-        color: "#00ff88",
-        stroke: "#000000",
-        strokeThickness: 3,
-      })
-      .setScrollFactor(0)
-      .setDepth(30)
-      .setOrigin(0.5)
-      .setVisible(false);
-
-    this.menuKeyText = this.add
-      .text(this.scale.width / 2, 438, "[ M ]  Main Menu", {
-        fontSize: "20px",
-        color: "#aaaaff",
-        stroke: "#000000",
-        strokeThickness: 3,
-      })
-      .setScrollFactor(0)
-      .setDepth(30)
-      .setOrigin(0.5)
-      .setVisible(false);
-
-    // Mass milestone announcement (center-screen pop, hidden until triggered)
-    this.milestoneText = this.add
-      .text(this.scale.width / 2, 155, "", {
-        fontFamily: "Arial Black",
-        fontSize: "30px",
-        color: "#ffdd00",
-        stroke: "#000000",
-        strokeThickness: 5,
-        align: "center",
-      })
-      .setScrollFactor(0)
-      .setDepth(21)
-      .setOrigin(0.5)
-      .setVisible(false);
-
-    // Minimap — screen-space overlay, bottom-right
-    this.minimapGfx = this.add.graphics().setScrollFactor(0).setDepth(22);
-
-    // Waiting-phase overlay — shown when joining during 'ended' phase
-    this._waitingOverlayGfx = this.add.graphics().setScrollFactor(0).setDepth(25).setVisible(false);
-    this._waitingOverlayText = this.add.text(
-      this.scale.width / 2, this.scale.height / 2, "",
-      { fontSize: "28px", fontFamily: "monospace", color: "#00ff88", stroke: "#000000", strokeThickness: 4, align: "center" }
-    ).setScrollFactor(0).setDepth(26).setOrigin(0.5).setVisible(false);
-
-    // Leaderboard — top-right, right-anchored
-    this.leaderboardText = this.add
-      .text(this.scale.width - 14, 14, "", {
-        fontSize: "13px",
-        color: "#dddddd",
-        stroke: "#000000",
-        strokeThickness: 3,
-        lineSpacing: 3,
-        fontFamily: "monospace",
-      })
-      .setScrollFactor(0)
-      .setDepth(22)
-      .setOrigin(1, 0);
-
-    // Reposition center-anchored HUD on resize
-    this.scale.on("resize", (gameSize: Phaser.Structs.Size) => {
-      const cx = gameSize.width / 2;
-      this.phaseText.setX(cx);
-      this.roundTimerText.setX(cx);
-      this.endText.setX(cx);
-      this.statsText.setX(cx);
-      this.restartText.setX(cx);
-      this.menuKeyText.setX(cx);
-      this.milestoneText.setX(cx);
-      this.leaderboardText.setX(gameSize.width - 14);
-    });
 
     // Input — keyboard, mouse/touch, gamepad
     this.inputMgr = new InputManager(this);
@@ -480,20 +303,15 @@ export class Main extends Phaser.Scene {
     this.net?.onLobbyState((state) => {
       if (state.phase === 'ended') {
         this._inputFrozen = true;
-        this._waitingOverlayGfx.clear();
-        this._waitingOverlayGfx.fillStyle(0x000000, 0.75);
-        this._waitingOverlayGfx.fillRect(0, 0, this.scale.width, this.scale.height);
-        this._waitingOverlayGfx.setVisible(true);
         const secs = Math.max(0, Math.ceil(state.lobbyCountdown));
-        this._waitingOverlayText.setText(`Next round starting in ${secs}s`).setVisible(true);
+        this.hud.showWaitingOverlay(secs, this.scale.width, this.scale.height);
       }
     });
 
     // Round started: unfreeze input and hide overlay
     this.net?.onRoundStarted(() => {
       this._inputFrozen = false;
-      this._waitingOverlayGfx.setVisible(false);
-      this._waitingOverlayText.setVisible(false);
+      this.hud.hideWaitingOverlay();
     });
 
     // When server signals round end, navigate to the polished RoundResults scene
@@ -528,21 +346,7 @@ export class Main extends Phaser.Scene {
     this.wasThrusting = false;
     this.absorbSfxCooldown = 0;
 
-    // Kill feed — pre-allocate 5 text objects, bottom-left corner
-    this.killFeedEntries = [];
-    this.killFeedTexts = [];
-    for (let i = 0; i < 5; i++) {
-      this.killFeedTexts.push(
-        this.add.text(16, 0, "", {
-          fontSize: "13px",
-          fontFamily: "monospace",
-          color: "#00ff88",
-          stroke: "#000000",
-          strokeThickness: 2,
-        }).setScrollFactor(0).setDepth(21).setVisible(false)
-      );
-    }
-
+    this.hud.reset();
     EventBus.emit("current-scene-ready", this);
   }
 
@@ -938,8 +742,7 @@ export class Main extends Phaser.Scene {
           this.lastMassMilestone = m;
           const mult = Math.round(m / STARTING_MASS);
           const label = mult >= 2 ? `${mult}× VI!` : `${Math.floor(m)} VI!`;
-          this.milestoneText.setText(label).setAlpha(1).setVisible(true);
-          this.milestoneTimer = 2.5;
+          this.hud.triggerMilestone(label, 2.5);
           this.spawnBurst(this.player.x, this.player.y, 25, 140, 0xffdd00, 1.2);
           break;
         }
@@ -947,53 +750,53 @@ export class Main extends Phaser.Scene {
     }
 
     // ── HUD ─────────────────────────────────────────────────────────────
-    const vi = Math.floor(this.player.mass);
-    const deltaVI = vi - this.buyInTokens;
-    const deltaStr = deltaVI >= 0 ? `+${deltaVI}` : `${deltaVI}`;
-    const tierLabel = TIER_INFO[this.playerTier].label;
-    const losing = deltaVI < 0;
-
-    // Estimate current rank among alive players for payout preview
-    const aliveMasses: number[] = [this.player.mass];
-    if (this.net) {
-      for (const [, rp] of this.net.otherPlayers) {
-        if (rp.phase === "alive") aliveMasses.push(rp.mass);
+    {
+      const aliveMasses: number[] = [this.player.mass];
+      if (this.net) {
+        for (const [, rp] of this.net.otherPlayers) {
+          if (rp.phase === "alive") aliveMasses.push(rp.mass);
+        }
       }
+      for (const bot of this.bots) {
+        if (bot.active) aliveMasses.push(bot.mass);
+      }
+      aliveMasses.sort((a, b) => b - a);
+      const myRank = aliveMasses.indexOf(this.player.mass) + 1;
+      const RANK_MULTS = [1.50, 1.25, 1.10];
+      const myMult = myRank <= 3 ? RANK_MULTS[myRank - 1] : 1.0;
+      const vi = Math.floor(this.player.mass);
+      const estimatedPayout = Math.floor(vi * myMult * 0.95);
+      const prizePool = this.net ? Math.floor(this.net.gameState.prizePool) : this.buyInTokens;
+      this.hud.updateMassHUD({
+        playerMass: this.player.mass,
+        buyInTokens: this.buyInTokens,
+        tierLabel: TIER_INFO[this.playerTier].label,
+        spawnProtectTimer: this.spawnProtectTimer,
+        boostCooldown: this.boostCooldown,
+        ejectCooldown: this.ejectCooldown,
+        shieldCooldown: this.shieldCooldown,
+        estimatedPayout,
+        myRank,
+        prizePool,
+      });
     }
-    for (const bot of this.bots) {
-      if (bot.active) aliveMasses.push(bot.mass);
-    }
-    aliveMasses.sort((a, b) => b - a);
-    const myRank = aliveMasses.indexOf(this.player.mass) + 1;
-    const RANK_MULTS = [1.50, 1.25, 1.10];
-    const myMult = myRank <= 3 ? RANK_MULTS[myRank - 1] : 1.0;
-    const estimatedPayout = Math.floor(vi * myMult * 0.95);
-    const prizePool = this.net ? Math.floor(this.net.gameState.prizePool) : this.buyInTokens;
-
-    const hudLines = [
-      `${vi} VI  (${deltaStr})  [${tierLabel}  ${this.buyInTokens} VI]`,
-      `Payout: ~${estimatedPayout} VI   rank #${myRank}`,
-      `Pool:    ${prizePool} VI staked`,
-    ];
-    if (this.spawnProtectTimer > 0) {
-      hudLines.push(`SPAWN SHIELD: ${this.spawnProtectTimer.toFixed(1)}s`);
-    }
-    const cdBoost  = this.boostCooldown  > 0 ? `${this.boostCooldown.toFixed(1)}s`  : "READY";
-    const cdEject  = this.ejectCooldown  > 0 ? `${this.ejectCooldown.toFixed(1)}s`  : "READY";
-    const cdShield = this.shieldCooldown > 0 ? `${this.shieldCooldown.toFixed(1)}s` : "READY";
-    hudLines.push(`Shift:${cdBoost}  Q:${cdEject}  F:${cdShield}`);
-    // Loss aversion: turn HUD red when below buy-in, green when profiting
-    this.massText.setColor(losing ? "#ff3333" : deltaVI > 0 ? "#00ff88" : "#ffffff");
-    this.massText.setText(hudLines.join("\n"));
-
-    this.updatePhaseHUD();
+    this.hud.updatePhaseHUD({
+      phase: this.phase,
+      gameTimer: this.gameTimer,
+      escaping: this.escaping,
+      escapeTimer: this.escapeTimer,
+      disruptFlash: this.disruptFlash,
+      playerX: this.player.x,
+      playerY: this.player.y,
+      timeNow: this.time.now / 1000,
+    });
 
     // ── Render ──────────────────────────────────────────────────────────
     this.drawVignette();
     this.drawScene(dt);
-    this.drawMinimap();
-    this.drawLeaderboard();
-    this.drawKillFeed(dt);
+    this.hud.drawMinimap({ phase: this.phase, bhMass: this.bhMass, asteroids: this.asteroids, net: this.net, bots: this.bots, playerX: this.player.x, playerY: this.player.y });
+    this.hud.drawLeaderboard({ playerMass: this.player.mass, net: this.net, bots: this.bots });
+    this.hud.drawKillFeed(dt);
   }
 
   // ─── Black Hole Update ─────────────────────────────────────────────────────
@@ -1083,7 +886,7 @@ export class Main extends Phaser.Scene {
         } else {
           // Too close — flash a warning
           this.disruptFlash = 1.5;
-          this.phaseText.setText("TOO CLOSE TO CENTER — move to the outer edge!");
+          this.hud.setPhaseMessage("TOO CLOSE TO CENTER — move to the outer edge!", "#ff8800");
         }
       } else {
         // Cancel escape
@@ -1121,7 +924,7 @@ export class Main extends Phaser.Scene {
     this.escaping     = false;
     this.escapeTimer  = 0;
     this.disruptFlash = 1.2;
-    this.phaseText.setText(reason).setColor("#ff4400");
+    this.hud.setPhaseMessage(reason, "#ff4400");
     this.net?.sendEscapeCancel();
   }
 
@@ -1224,8 +1027,7 @@ export class Main extends Phaser.Scene {
     for (const thresh of COMBO_ANNOUNCE_THRESHOLDS) {
       if (this.absorbCombo >= thresh && !this.comboAnnounced.has(thresh)) {
         this.comboAnnounced.add(thresh);
-        this.milestoneText.setText(`CHAIN x${this.absorbCombo}!`).setAlpha(1).setVisible(true);
-        this.milestoneTimer = 2.0;
+        this.hud.triggerMilestone(`CHAIN x${this.absorbCombo}!`, 2.0);
         this.sfx.combo(this.absorbCombo);
         break; // show highest unannounced threshold this frame
       }
@@ -1295,16 +1097,15 @@ export class Main extends Phaser.Scene {
         this.spawnBurst(rp.x, rp.y, 50, 220, 0xffdd00, 1.3);
         this.spawnFloatLabel(rp.x, rp.y, rp.mass, 0xffdd00);
         const tag = rp.id.slice(0, 6).toUpperCase();
-        this.pushKillFeed(`YOU absorbed ${tag}`, 0xffdd00);
+        this.hud.pushKillFeed(`YOU absorbed ${tag}`, 0xffdd00);
         if (this.killStreak >= 2) {
-          this.milestoneText.setText(`KILL STREAK ×${this.killStreak}!`).setAlpha(1).setVisible(true);
-          this.milestoneTimer = 2.2;
+          this.hud.triggerMilestone(`KILL STREAK ×${this.killStreak}!`, 2.2);
         }
       } else if (rp.mass >= pm * ABSORB_RATIO && this.spawnProtectTimer <= 0 && this.shieldTimer <= 0) {
         // They absorb us: game over (blocked during spawn protection or active shield)
         this.phase = 'consumed';
         const tag = rp.id.slice(0, 6).toUpperCase();
-        this.pushKillFeed(`${tag} absorbed YOU`, 0xff5500);
+        this.hud.pushKillFeed(`${tag} absorbed YOU`, 0xff5500);
         this.showEndScreen(false, `ABSORBED BY ${tag}`);
         break;
       } else {
@@ -1441,10 +1242,9 @@ export class Main extends Phaser.Scene {
             this.cameras.main.shake(350, 0.015);
             this.spawnBurst(bot.x, bot.y, 40, 190, 0xff7700, 1.1);
             this.spawnFloatLabel(bot.x, bot.y, bot.mass, 0xff7700);
-            this.pushKillFeed(`YOU absorbed ${bot.name}`, 0xff9900);
+            this.hud.pushKillFeed(`YOU absorbed ${bot.name}`, 0xff9900);
             if (this.killStreak >= 2) {
-              this.milestoneText.setText(`KILL STREAK ×${this.killStreak}!`).setAlpha(1).setVisible(true);
-              this.milestoneTimer = 2.2;
+              this.hud.triggerMilestone(`KILL STREAK ×${this.killStreak}!`, 2.2);
             }
           } else {
             // Similar size: elastic collision
@@ -1528,18 +1328,20 @@ export class Main extends Phaser.Scene {
     overlay.fillStyle(0x000000, 0.65);
     overlay.fillRect(0, 0, gw, gh);
 
+    let title: string;
+    let titleColor: string;
     if (escaped) {
-      this.endText.setText("ESCAPED!").setColor("#00ffaa").setVisible(true);
+      title = "ESCAPED!";
+      titleColor = "#00ffaa";
       if (this.player.mass < CLUTCH_MASS_THRESH) {
         this.sfx.clutchEscape();
-        this.milestoneText.setText("CLUTCH ESCAPE!!").setColor("#ff00ff").setAlpha(1).setVisible(true);
-        this.milestoneTimer = 3.5;
+        this.hud.triggerMilestone("CLUTCH ESCAPE!!", 3.5, "#ff00ff");
       } else {
         this.sfx.escaped();
       }
     } else {
-      const msg = deathMessage ?? "CONSUMED BY THE VOID";
-      this.endText.setText(msg).setColor("#ff5500").setVisible(true);
+      title = deathMessage ?? "CONSUMED BY THE VOID";
+      titleColor = "#ff5500";
       this.sfx.death();
     }
 
@@ -1558,29 +1360,21 @@ export class Main extends Phaser.Scene {
     const deltaVI = escaped ? netVI - this.buyInTokens : -this.buyInTokens;
     const deltaSign = deltaVI >= 0 ? "+" : "";
 
-    let escaped_line: string;
+    let escapedLine: string;
     if (escaped) {
       const bonusStr = bonusMult > 1.0 ? `  ×${bonusMult} rank-bonus` : "";
-      escaped_line = `Payout: ${netVI} VI  (${deltaSign}${deltaVI})${bonusStr}`;
+      escapedLine = `Payout: ${netVI} VI  (${deltaSign}${deltaVI})${bonusStr}`;
     } else {
-      escaped_line = `Stake lost: -${this.buyInTokens} VI`;
+      escapedLine = `Stake lost: -${this.buyInTokens} VI`;
     }
 
-    const statsLines = [
-      escaped_line,
-      `Time: ${timeStr}   ${rankStr}`,
-      `Wallet: ${newBalance.toLocaleString()} VI`,
-    ].filter(Boolean);
-
-    this.statsText
-      .setText(statsLines.join("\n"))
-      .setColor(deltaVI >= 0 ? "#00ff88" : "#ff3333")
-      .setVisible(true);
-
-    this.restartText
-      .setText(`[ R ]  Re-stake  ${TIER_INFO[this.playerTier].label} (${this.buyInTokens} VI)`)
-      .setVisible(true);
-    this.menuKeyText.setVisible(true);
+    this.hud.showEndResult({
+      title,
+      titleColor,
+      statsLines: [escapedLine, `Time: ${timeStr}   ${rankStr}`, `Wallet: ${newBalance.toLocaleString()} VI`],
+      statsColor: deltaVI >= 0 ? "#00ff88" : "#ff3333",
+      restartLabel: `[ R ]  Re-stake  ${TIER_INFO[this.playerTier].label} (${this.buyInTokens} VI)`,
+    });
 
     this.input.keyboard!.once("keydown-R", () => {
       this.scene.restart();
@@ -1603,78 +1397,6 @@ export class Main extends Phaser.Scene {
       this.time.delayedCall(2500, () => {
         if (this.scene.isActive()) this.scene.start("GameOver", gameOverData);
       });
-    }
-  }
-
-  // ─── Phase HUD ─────────────────────────────────────────────────────────────
-  private updatePhaseHUD() {
-    if (this.phase === 'playing') {
-      const remaining = Math.max(0, SHRINK_START_DELAY - this.gameTimer);
-      const mins = Math.floor(remaining / 60);
-      const secs = Math.floor(remaining % 60).toString().padStart(2, '0');
-      const t_now = this.time.now / 1000;
-
-      if (remaining <= 10) {
-        // Final 10s: large blinking red countdown
-        const blink = Math.sin(t_now * 10) > 0;
-        this.phaseText
-          .setText(`⚠  BIG SHRINK IN  ${remaining.toFixed(0)}s  ⚠`)
-          .setColor(blink ? "#ff0000" : "#ff6600")
-          .setFontSize("18px");
-        this.roundTimerText.setText("");
-      } else if (remaining <= 30) {
-        // 30s: orange pulsing warning
-        this.phaseText
-          .setText(`⚠  BIG SHRINK IN  ${remaining.toFixed(0)}s  ⚠`)
-          .setColor("#ff6600")
-          .setFontSize("15px");
-        this.roundTimerText.setText("");
-      } else if (remaining <= 60) {
-        // 60s: amber warning
-        this.phaseText
-          .setText(`BIG SHRINK IN ${remaining.toFixed(0)}s`)
-          .setColor("#ffaa00")
-          .setFontSize("14px");
-        this.roundTimerText.setText("");
-      } else {
-        // Normal play: subtle timer
-        this.phaseText.setText("").setFontSize("15px");
-        this.roundTimerText
-          .setText(`SHRINK IN  ${mins}:${secs}`)
-          .setColor("#999999")
-          .setFontSize("12px");
-      }
-      return;
-    }
-
-    // Clear round timer during shrink/end
-    this.roundTimerText.setText("");
-
-    if (this.phase === 'shrinking') {
-      if (this.escaping) {
-        const t = this.time.now / 1000;
-        const pulse = Math.sin(t * 6) > 0 ? "#00ffaa" : "#ffffff";
-        this.phaseText
-          .setText(`ESCAPING...  ${this.escapeTimer.toFixed(1)}s`)
-          .setColor(pulse);
-      } else if (this.disruptFlash > 0) {
-        // phaseText already set by disruptEscape/warning — leave it
-      } else {
-        const distFromCenter = Math.hypot(
-          this.player.x - WORLD_SIZE / 2,
-          this.player.y - WORLD_SIZE / 2
-        );
-        const canEscape = distFromCenter >= ESCAPE_MIN_DIST;
-        if (canEscape) {
-          this.phaseText
-            .setText("THE BIG SHRINK  |  Press  [E]  to ESCAPE")
-            .setColor("#ffcc00");
-        } else {
-          this.phaseText
-            .setText("THE BIG SHRINK  |  Move to the outer edge to escape")
-            .setColor("#ff8800");
-        }
-      }
     }
   }
 
@@ -2100,12 +1822,7 @@ export class Main extends Phaser.Scene {
     }
 
     // Milestone text fade-out
-    if (this.milestoneTimer > 0) {
-      this.milestoneTimer = Math.max(0, this.milestoneTimer - dt);
-      const alpha = this.milestoneTimer < 0.5 ? this.milestoneTimer / 0.5 : 1;
-      this.milestoneText.setAlpha(alpha);
-      if (this.milestoneTimer <= 0) this.milestoneText.setVisible(false);
-    }
+    this.hud.tickMilestone(dt);
 
     // BH rumble (throttled, only during shrink)
     if (this.phase === 'shrinking') {
@@ -2331,152 +2048,12 @@ export class Main extends Phaser.Scene {
     }
   }
 
-  // ─── Minimap ───────────────────────────────────────────────────────────────
-  // ─── Kill Feed ─────────────────────────────────────────────────────────────
-  private pushKillFeed(msg: string, color: number = 0x00ff88) {
-    this.killFeedEntries.unshift({ msg, life: 5.0, color });
-    if (this.killFeedEntries.length > 5) this.killFeedEntries.pop();
-  }
-
-  private drawKillFeed(dt: number) {
-    // Decay all entries
-    for (const e of this.killFeedEntries) e.life -= dt;
-    this.killFeedEntries = this.killFeedEntries.filter(e => e.life > 0);
-
-    const baseY = this.scale.height - 90;
-    for (let i = 0; i < this.killFeedTexts.length; i++) {
-      const entry = this.killFeedEntries[i];
-      const txt   = this.killFeedTexts[i];
-      if (!entry) { txt.setVisible(false); continue; }
-      const alpha = entry.life < 1.5 ? entry.life / 1.5 : 1.0;
-      const r = (entry.color >> 16) & 0xff;
-      const g = (entry.color >>  8) & 0xff;
-      const b =  entry.color        & 0xff;
-      const hex = `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
-      txt.setText(entry.msg)
-         .setColor(hex)
-         .setAlpha(alpha)
-         .setY(baseY - i * 20)
-         .setVisible(true);
-    }
-  }
-
-  private drawMinimap() {
-    const gw = this.scale.width;
-    const gh = this.scale.height;
-    const MM_SIZE = 160;
-    const MM_PAD  = 12;
-    const mmX  = gw - MM_SIZE - MM_PAD;   // top-left of minimap in screen coords
-    const mmY  = gh - MM_SIZE - MM_PAD;
-    const sc   = MM_SIZE / WORLD_SIZE;     // world → minimap scale
-
-    this.minimapGfx.clear();
-
-    // Background
-    this.minimapGfx.fillStyle(0x000818, 0.65);
-    this.minimapGfx.fillRect(mmX, mmY, MM_SIZE, MM_SIZE);
-
-    // Border
-    this.minimapGfx.lineStyle(1, 0x334455, 0.9);
-    this.minimapGfx.strokeRect(mmX, mmY, MM_SIZE, MM_SIZE);
-
-    const wx = (wx: number) => mmX + wx * sc;
-    const wy = (wy: number) => mmY + wy * sc;
-
-    // Black hole at world center (visible during shrink phase)
-    if (this.phase === 'shrinking' || this.phase === 'escaped' || this.phase === 'consumed') {
-      const bhR = Math.max(3, Math.min(massToRadius(this.bhMass) * sc, 14));
-      this.minimapGfx.fillStyle(0xff6600, 0.9);
-      this.minimapGfx.fillCircle(wx(WORLD_SIZE / 2), wy(WORLD_SIZE / 2), bhR);
-      this.minimapGfx.fillStyle(0x000000, 1);
-      this.minimapGfx.fillCircle(wx(WORLD_SIZE / 2), wy(WORLD_SIZE / 2), bhR * 0.65);
-    }
-
-    // Asteroids — gray; planets — gold
-    for (const a of this.asteroids) {
-      const isPlanet = a.mass >= PLANET_THRESHOLD;
-      this.minimapGfx.fillStyle(isPlanet ? 0xffdd88 : 0x778899, isPlanet ? 0.85 : 0.55);
-      this.minimapGfx.fillCircle(wx(a.x), wy(a.y), isPlanet ? 3 : 1.5);
-    }
-
-    // Remote players — their hue-colored dots
-    if (this.net) {
-      this.remoteManager.drawMinimapDots(this.minimapGfx, this.net.otherPlayers, wx, wy);
-    }
-
-    // Bot players — colored dots
-    for (const bot of this.bots) {
-      if (!bot.active) continue;
-      this.minimapGfx.fillStyle(bot.color, 0.9);
-      this.minimapGfx.fillCircle(wx(bot.x), wy(bot.y), 2.5);
-    }
-
-    // Local player — bright white with cyan ring to distinguish
-    this.minimapGfx.fillStyle(0xffffff, 1);
-    this.minimapGfx.fillCircle(wx(this.player.x), wy(this.player.y), 3);
-    this.minimapGfx.lineStyle(1.5, 0x00ffff, 0.9);
-    this.minimapGfx.strokeCircle(wx(this.player.x), wy(this.player.y), 5);
-
-    // "MAP" label at top-left corner of minimap
-    // (skipped — minimalist look is cleaner)
-  }
-
-  // ─── Leaderboard ───────────────────────────────────────────────────────────
-  private drawLeaderboard() {
-    const myName = getOrCreatePlayerName();
-    type Entry = { label: string; mass: number; isLocal: boolean };
-    const entries: Entry[] = [
-      { label: myName, mass: this.player.mass, isLocal: true },
-    ];
-    if (this.net) {
-      for (const [, rp] of this.net.otherPlayers) {
-        if (rp.phase !== "alive") continue;
-        entries.push({ label: rp.name, mass: rp.mass, isLocal: false });
-      }
-    }
-    for (const bot of this.bots) {
-      if (bot.active) entries.push({ label: bot.name, mass: bot.mass, isLocal: false });
-    }
-
-    entries.sort((a, b) => b.mass - a.mass);
-    const top5 = entries.slice(0, 5);
-    const BONUS_MULTS = [1.50, 1.25, 1.10];
-
-    const lines: string[] = ["LEADERBOARD"];
-    for (let i = 0; i < top5.length; i++) {
-      const e = top5[i];
-      const tag = e.isLocal ? `[${e.label}]` : e.label;
-      if (i < 3) {
-        const payout = Math.floor(e.mass * BONUS_MULTS[i] * 0.95);
-        lines.push(`#${i + 1} ${tag}  ${Math.floor(e.mass)}  →${payout}`);
-      } else {
-        lines.push(`#${i + 1} ${tag}  ${Math.floor(e.mass)}`);
-      }
-    }
-
-    this.leaderboardText.setText(lines.join("\n"));
-  }
-
   shutdown() {
     this.remoteManager?.destroy();
     for (const lbl of this.botNameLabels.values()) lbl.destroy();
     this.botNameLabels.clear();
     this.net?.disconnect();
     this.net = null;
-  }
-
-  private drawGrid() {
-    const gridSize = 200;
-    this.gridGfx.lineStyle(1, 0x1a2a3a, 0.8);
-    for (let gx = 0; gx <= WORLD_SIZE; gx += gridSize) {
-      this.gridGfx.moveTo(gx, 0);
-      this.gridGfx.lineTo(gx, WORLD_SIZE);
-    }
-    for (let gy = 0; gy <= WORLD_SIZE; gy += gridSize) {
-      this.gridGfx.moveTo(0, gy);
-      this.gridGfx.lineTo(WORLD_SIZE, gy);
-    }
-    this.gridGfx.strokePath();
   }
 
   changeScene() {
