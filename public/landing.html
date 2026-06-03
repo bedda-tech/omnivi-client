@@ -186,6 +186,16 @@
       line-height: 1.5;
     }
 
+    /* ── live stats ── */
+    .live-stats {
+      font-size: 0.8rem;
+      color: rgba(200,220,255,0.45);
+      letter-spacing: 0.05em;
+      margin-bottom: 2.5rem;
+    }
+
+    .live-stats span { color: var(--cyan); }
+
     /* ── footer ── */
     footer {
       font-size: 0.75rem;
@@ -215,6 +225,10 @@
       <div class="feat"><span>💥</span>Absorb or be absorbed</div>
       <div class="feat"><span>🚀</span>Thrust, eject, escape</div>
       <div class="feat"><span>⏳</span>Collapsing black hole timer</div>
+    </div>
+
+    <div id="live-stats" class="live-stats" style="display:none">
+      <span id="stats-escapes"></span> total escapes &nbsp;·&nbsp; Top pilot: <span id="stats-top"></span>
     </div>
 
     <div class="how">
@@ -277,6 +291,20 @@
       resize();
       draw();
     })();
+
+    // live stats fetch
+    document.addEventListener('DOMContentLoaded', function () {
+      fetch('/stats')
+        .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+        .then(function (d) {
+          if (!d || typeof d.totalEscapes !== 'number') return;
+          document.getElementById('stats-escapes').textContent = d.totalEscapes.toLocaleString();
+          document.getElementById('stats-top').textContent =
+            d.topPlayer ? d.topPlayer.name : '—';
+          document.getElementById('live-stats').style.display = '';
+        })
+        .catch(function () {});
+    });
   </script>
 </body>
 </html>
