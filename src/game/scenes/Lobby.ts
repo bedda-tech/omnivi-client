@@ -342,9 +342,11 @@ export class Lobby extends Scene {
     // Attempt on-chain stake when contracts are configured and wallet is connected
     const vaultAddr: string = (import.meta as any).env?.VITE_GAME_VAULT_ADDRESS ?? "";
     if (!this.practiceMode && this.walletAddress && vaultAddr) {
-      this.statusText.setText("Staking... (check MetaMask)").setColor("#ffaa00");
+      this.statusText.setText("Step 1/2: Approving VI tokens... (check MetaMask)").setColor("#ffaa00");
       try {
-        await approveAndStake(this.selectedTier);
+        await approveAndStake(this.selectedTier, (step) => {
+          if (step === 2) this.statusText.setText("Step 2/2: Staking... (check MetaMask)").setColor("#ffaa00");
+        });
         this.statusText.setText("Staked! Entering round...").setColor("#00ff88");
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

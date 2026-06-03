@@ -83,7 +83,7 @@ export async function submitRestake(payload: ClaimPayload, newTier: number): Pro
  * Returns the stakeForTier transaction hash on success.
  * Throws if contracts not configured, MetaMask absent, or user rejects.
  */
-export async function approveAndStake(tier: number): Promise<string> {
+export async function approveAndStake(tier: number, onProgress?: (step: 1 | 2) => void): Promise<string> {
   if (!VAULT_ADDRESS) throw new Error("VITE_GAME_VAULT_ADDRESS not configured");
   if (!VI_TOKEN_ADDRESS) throw new Error("VITE_VI_TOKEN_ADDRESS not configured");
 
@@ -100,10 +100,12 @@ export async function approveAndStake(tier: number): Promise<string> {
   const amount: bigint = await vault.tierAmount(tier);
 
   // Step 1: approve vault to spend the stake amount
+  onProgress?.(1);
   const approveTx = await token.approve(VAULT_ADDRESS, amount);
   await approveTx.wait();
 
   // Step 2: stake (transfers tokens into vault)
+  onProgress?.(2);
   const stakeTx = await vault.stakeForTier(tier);
   await stakeTx.wait();
 
