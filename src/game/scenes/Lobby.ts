@@ -3,6 +3,7 @@ import { EventBus } from "../EventBus";
 import {
   NetworkManager,
   getOrCreatePlayerName,
+  setStoredName,
   getStoredTier,
   setStoredTier,
   TIER_INFO,
@@ -48,6 +49,7 @@ export class Lobby extends Scene {
 
   // UI elements
   private titleText!: GameObjects.Text;
+  private nameText!: GameObjects.Text;
   private statusText!: GameObjects.Text;
   private countdownText!: GameObjects.Text;
   private playerListText!: GameObjects.Text;
@@ -203,6 +205,21 @@ export class Lobby extends Scene {
         }
       });
     }
+
+    // ── Player name (click to edit) ───────────────────────────────────────────
+    const currentName = getOrCreatePlayerName();
+    this.nameText = this.add.text(cx, 218, `PILOT: ${currentName}  [edit]`, {
+      fontFamily: "monospace",
+      fontSize: "11px",
+      color: "#4488aa",
+      align: "center",
+    })
+      .setOrigin(0.5)
+      .setDepth(10)
+      .setInteractive({ useHandCursor: true })
+      .on("pointerover", () => this.nameText.setColor("#88ccee"))
+      .on("pointerout",  () => this.nameText.setColor("#4488aa"))
+      .on("pointerdown", () => this.editPlayerName());
 
     // ── Tier selection label ───────────────────────────────────────────────────
     this.add.text(cx, cy - 85, "SELECT BUY-IN TIER", {
@@ -442,6 +459,16 @@ export class Lobby extends Scene {
     this.tierDescText
       .setText(descLine)
       .setColor(canAffordSelected ? TIER_COLORS_S[index] : "#ff4444");
+  }
+
+  private editPlayerName(): void {
+    const current = getOrCreatePlayerName();
+    const input = window.prompt("Enter your pilot name (max 20 chars):", current);
+    if (input === null) return;
+    const trimmed = input.trim().slice(0, 20);
+    if (!trimmed) return;
+    setStoredName(trimmed);
+    this.nameText.setText(`PILOT: ${trimmed}  [edit]`);
   }
 
   private cancelLobby(): void {

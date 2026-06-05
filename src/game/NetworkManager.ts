@@ -15,6 +15,9 @@ export function getOrCreatePlayerName(): string {
   localStorage.setItem(NAME_KEY, name);
   return name;
 }
+export function setStoredName(name: string): void {
+  localStorage.setItem(NAME_KEY, name);
+}
 
 /** Persist tier selection across sessions. Default = 1 (Standard). */
 export function getStoredTier(): number {
