@@ -51,6 +51,7 @@ export class Lobby extends Scene {
   private titleText!: GameObjects.Text;
   private nameText!: GameObjects.Text;
   private statusText!: GameObjects.Text;
+  private playersOnlineText!: GameObjects.Text;
   private countdownText!: GameObjects.Text;
   private playerListText!: GameObjects.Text;
   private tierBtns: GameObjects.Text[] = [];
@@ -58,6 +59,7 @@ export class Lobby extends Scene {
   private cancelText!: GameObjects.Text;
   private waitDots: number = 0;
   private waitDotTimer: number = 0;
+  private statsTimer: Phaser.Time.TimerEvent | null = null;
 
   // Lobby state
   private lobbyPhase: string = "lobby";
@@ -277,6 +279,16 @@ export class Lobby extends Scene {
       align: "center",
     }).setOrigin(0.5).setDepth(10);
 
+    this.playersOnlineText = this.add.text(cx, cy + 118, "", {
+      fontFamily: "monospace",
+      fontSize: "11px",
+      color: "#334455",
+      align: "center",
+    }).setOrigin(0.5).setDepth(10);
+
+    void this._fetchStats();
+    this.statsTimer = this.time.addEvent({ delay: 5000, loop: true, callback: this._fetchStats, callbackScope: this });
+
     this.countdownText = this.add.text(cx, cy + 142, "", {
       fontFamily: '"Arial Black", Gadget, sans-serif',
       fontSize: "52px",
@@ -471,6 +483,23 @@ export class Lobby extends Scene {
     this.nameText.setText(`PILOT: ${trimmed}  [edit]`);
   }
 
+  private async _fetchStats(): Promise<void> {
+    const serverBase = (import.meta as any).env?.VITE_SERVER_URL
+      ?.replace("ws://", "http://").replace("wss://", "https://")
+      ?? "http://localhost:8000";
+    try {
+      const res = await fetch(`${serverBase}/stats`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (typeof data.activePlayers === "number" && this.sys.isActive()) {
+        const n = data.activePlayers;
+        this.playersOnlineText.setText(n === 1 ? "1 player online" : `${n} players online`).setColor("#445566");
+      }
+    } catch {
+      // silently ignore — transient network errors
+    }
+  }
+
   private cancelLobby(): void {
     this.net?.disconnect();
     this.net = null;
@@ -536,6 +565,8 @@ export class Lobby extends Scene {
   }
 
   shutdown() {
+    this.statsTimer?.remove();
+    this.statsTimer = null;
     if (!this.roundStarting) {
       this.net?.disconnect();
       this.net = null;
