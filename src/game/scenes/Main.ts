@@ -128,8 +128,9 @@ export class Main extends Phaser.Scene {
 
   preload() {}
 
-  create(data?: { practiceMode?: boolean }) {
+  create(data?: { practiceMode?: boolean; stakeTxHash?: string }) {
     this.practiceMode = data?.practiceMode ?? false;
+    const stakeTxHash = data?.stakeTxHash ?? "";
     this.cameras.main.setBounds(0, 0, WORLD_SIZE, WORLD_SIZE);
 
     // HUD manager — creates grid, minimap, text overlays, kill feed
@@ -250,7 +251,7 @@ export class Main extends Phaser.Scene {
     this.net.onPlayerRemoved((id) => {
       this.remoteManager.removePlayer(id);
     });
-    this.net.connect(getOrCreatePlayerName(), this.playerTier, 1000, this.practiceMode).catch((err: unknown) => {
+    this.net.connect(getOrCreatePlayerName(), this.playerTier, 1000, this.practiceMode, stakeTxHash).catch((err: unknown) => {
       console.warn("[Net] Server unavailable — playing offline:", err);
       this.net = null;
     });

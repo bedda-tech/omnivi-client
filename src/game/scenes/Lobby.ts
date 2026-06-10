@@ -370,10 +370,11 @@ export class Lobby extends Scene {
   private async _enterRound(): Promise<void> {
     // Attempt on-chain stake when contracts are configured and wallet is connected
     const vaultAddr: string = (import.meta as any).env?.VITE_GAME_VAULT_ADDRESS ?? "";
+    let stakeTxHash = "";
     if (!this.practiceMode && this.walletAddress && vaultAddr) {
       this.statusText.setText("Step 1/2: Approving VI tokens... (check MetaMask)").setColor("#ffaa00");
       try {
-        await approveAndStake(this.selectedTier, (step) => {
+        stakeTxHash = await approveAndStake(this.selectedTier, (step) => {
           if (step === 2) this.statusText.setText("Step 2/2: Staking... (check MetaMask)").setColor("#ffaa00");
         });
         this.statusText.setText("Staked! Entering round...").setColor("#00ff88");
@@ -391,7 +392,7 @@ export class Lobby extends Scene {
     // Disconnect lobby connection — Main will open its own fresh connection
     this.net?.disconnect();
     this.net = null;
-    this.scene.start("Main", { tier: this.selectedTier, walletAddress: this.walletAddress, practiceMode: this.practiceMode });
+    this.scene.start("Main", { tier: this.selectedTier, walletAddress: this.walletAddress, practiceMode: this.practiceMode, stakeTxHash });
   }
 
   private updateLobbyUI(): void {
