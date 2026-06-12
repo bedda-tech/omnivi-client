@@ -252,8 +252,20 @@ export class Main extends Phaser.Scene {
       this.remoteManager.removePlayer(id);
     });
     this.net.connect(getOrCreatePlayerName(), this.playerTier, 1000, this.practiceMode, stakeTxHash).catch((err: unknown) => {
-      console.warn("[Net] Server unavailable — playing offline:", err);
-      this.net = null;
+      if (this.practiceMode || this.playerTier === 0) {
+        console.warn("[Net] Server unavailable — playing offline:", err);
+        this.net = null;
+      } else {
+        console.error("[Net] Staked-join failed — returning to Lobby:", err);
+        this.net = null;
+        this.add.text(
+          this.scale.width / 2,
+          this.scale.height / 2,
+          "Could not connect to game server\nYour stake is safe on-chain — please retry",
+          { fontSize: "20px", color: "#ff4444", align: "center", fontFamily: "monospace" }
+        ).setOrigin(0.5).setScrollFactor(0).setDepth(50);
+        this.time.delayedCall(3000, () => { this.scene.start("Lobby"); });
+      }
     });
 
     // When server sends a signed claim after escape, store it and surface to React layer
