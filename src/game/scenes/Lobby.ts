@@ -57,6 +57,7 @@ export class Lobby extends Scene {
   private tierBtns: GameObjects.Text[] = [];
   private tierDescText!: GameObjects.Text;
   private cancelText!: GameObjects.Text;
+  private tryAgainBtn: GameObjects.Text | null = null;
   private waitDots: number = 0;
   private waitDotTimer: number = 0;
   private statsTimer: Phaser.Time.TimerEvent | null = null;
@@ -299,6 +300,28 @@ export class Lobby extends Scene {
       align: "center",
     }).setOrigin(0.5).setDepth(10);
 
+    this.tryAgainBtn = this.add.text(cx, cy + 136, "▷  TRY AGAIN", {
+      fontFamily: "monospace",
+      fontSize: "14px",
+      color: "#ffaa00",
+      stroke: "#000000",
+      strokeThickness: 2,
+      align: "center",
+      shadow: { offsetX: 0, offsetY: 0, color: "#ff8800", blur: 8, fill: true },
+    })
+      .setOrigin(0.5)
+      .setDepth(10)
+      .setVisible(false)
+      .setInteractive({ useHandCursor: true })
+      .on("pointerover", () => this.tryAgainBtn?.setColor("#ffffff"))
+      .on("pointerout",  () => this.tryAgainBtn?.setColor("#ffaa00"))
+      .on("pointerdown", () => {
+        if (this.roundStarting) return;
+        this.roundStarting = true;
+        this.tryAgainBtn?.setVisible(false);
+        void this._enterRound();
+      });
+
     this.playerListText = this.add.text(cx, cy + 196, "", {
       fontFamily: "monospace",
       fontSize: "12px",
@@ -368,6 +391,7 @@ export class Lobby extends Scene {
   }
 
   private async _enterRound(): Promise<void> {
+    this.tryAgainBtn?.setVisible(false);
     // Attempt on-chain stake when contracts are configured and wallet is connected
     const vaultAddr: string = (import.meta as any).env?.VITE_GAME_VAULT_ADDRESS ?? "";
     let stakeTxHash = "";
@@ -384,6 +408,7 @@ export class Lobby extends Scene {
         // Hard-fail: reset so player knows they didn't stake
         this.statusText.setText(`Stake failed — ${msg.slice(0, 60)}`).setColor("#ff4444");
         this.roundStarting = false;
+        this.tryAgainBtn?.setVisible(true);
         return;
       }
     }
