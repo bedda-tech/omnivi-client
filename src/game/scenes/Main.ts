@@ -255,6 +255,11 @@ export class Main extends Phaser.Scene {
       if (this.practiceMode || this.playerTier === 0) {
         console.warn("[Net] Server unavailable — playing offline:", err);
         this.net = null;
+        this.add.text(
+          this.scale.width / 2, 24,
+          "OFFLINE — no server connection",
+          { fontSize: "14px", color: "#ff6633", stroke: "#000", strokeThickness: 3 }
+        ).setScrollFactor(0).setDepth(200).setOrigin(0.5, 0);
       } else {
         console.error("[Net] Staked-join failed — returning to Lobby:", err);
         this.net = null;
