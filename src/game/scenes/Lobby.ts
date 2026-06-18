@@ -54,6 +54,7 @@ export class Lobby extends Scene {
   private playersOnlineText!: GameObjects.Text;
   private countdownText!: GameObjects.Text;
   private playerListText!: GameObjects.Text;
+  private roundNumberText!: GameObjects.Text;
   private tierBtns: GameObjects.Text[] = [];
   private tierDescText!: GameObjects.Text;
   private cancelText!: GameObjects.Text;
@@ -329,6 +330,13 @@ export class Lobby extends Scene {
       align: "center",
     }).setOrigin(0.5).setDepth(10);
 
+    this.roundNumberText = this.add.text(cx, cy + 213, "", {
+      fontFamily: "monospace",
+      fontSize: "12px",
+      color: "#888888",
+      align: "center",
+    }).setOrigin(0.5).setDepth(10).setVisible(false);
+
     // ── Cancel button ─────────────────────────────────────────────────────────
     this.cancelText = this.add.text(cx, H - 30, "[ ESC ]  Back to menu", {
       fontFamily: "monospace",
@@ -517,9 +525,15 @@ export class Lobby extends Scene {
       const res = await fetch(`${serverBase}/stats`);
       if (!res.ok) return;
       const data = await res.json();
-      if (typeof data.activePlayers === "number" && this.sys.isActive()) {
+      if (!this.sys.isActive()) return;
+      if (typeof data.activePlayers === "number") {
         const n = data.activePlayers;
         this.playersOnlineText.setText(n === 1 ? "1 player online" : `${n} players online`).setColor("#445566");
+      }
+      if (typeof data.roundNumber === "number" && data.roundNumber > 0) {
+        this.roundNumberText.setText(`Round #${data.roundNumber}`).setVisible(true);
+      } else {
+        this.roundNumberText.setVisible(false);
       }
     } catch {
       // silently ignore — transient network errors
