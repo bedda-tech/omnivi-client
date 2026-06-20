@@ -499,9 +499,10 @@ export class Lobby extends Scene {
     const info = TIER_INFO[index];
     const canAffordSelected = balance >= info.viCost;
     const remaining = balance - info.viCost;
+    const minPayout = Math.floor(info.viCost * 0.95);
     const descLine = canAffordSelected
-      ? `stake ${info.viCost.toLocaleString()} VI  ·  ${remaining.toLocaleString()} remaining  ·  top-3 earns x1.5`
-      : `INSUFFICIENT VI  ·  need ${(info.viCost - balance).toLocaleString()} more`;
+      ? `stake ${info.viCost.toLocaleString()} VI  ·  ${remaining.toLocaleString()} remaining  ·  top-3 earns x1.5\nMin payout if escaped: ~${minPayout.toLocaleString()} VI`
+      : `INSUFFICIENT VI  ·  need ${(info.viCost - balance).toLocaleString()} more\nMin payout if escaped: ~${minPayout.toLocaleString()} VI`;
     this.tierDescText
       .setText(descLine)
       .setColor(canAffordSelected ? TIER_COLORS_S[index] : "#ff4444");
