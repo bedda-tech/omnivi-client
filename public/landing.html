@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>OMNIVI — Mass is Money</title>
-  <meta name="description" content="Agar.io meets space combat. Stake, absorb, escape. No downloads.">
+  <title>OMNIVI — Physics Space Battle</title>
+  <meta name="description" content="Real-time physics-based space battle in your browser. Absorb, grow, escape the black hole. No download required.">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -186,6 +186,21 @@
       line-height: 1.5;
     }
 
+    /* ── real-stakes callout ── */
+    .stakes {
+      max-width: 520px;
+      background: var(--card);
+      border: 1px solid rgba(170,68,255,0.2);
+      border-radius: 10px;
+      padding: 1.1rem 1.6rem;
+      margin-bottom: 2.5rem;
+      font-size: 0.82rem;
+      color: rgba(200,220,255,0.6);
+      line-height: 1.6;
+    }
+
+    .stakes strong { color: var(--purple); }
+
     /* ── live stats ── */
     .live-stats {
       font-size: 0.8rem;
@@ -225,6 +240,12 @@
       <div class="feat"><span>💥</span>Absorb or be absorbed</div>
       <div class="feat"><span>🚀</span>Thrust, eject, escape</div>
       <div class="feat"><span>⏳</span>Collapsing black hole timer</div>
+    </div>
+
+    <div class="stakes">
+      <strong>Optional: real-stakes mode.</strong>
+      Connect a wallet to stake tokens before a round and claim rewards on escape.
+      The game is fully free-to-play without a wallet — real-stakes mode is entirely opt-in.
     </div>
 
     <div id="live-stats" class="live-stats" style="display:none">
