@@ -17,7 +17,7 @@ import {
 } from "../constants";
 import { SfxManager } from "../managers/SfxManager";
 import { PhysicsManager } from "../managers/PhysicsManager";
-import { InputManager } from "../managers/InputManager";
+import { InputManager, ActionResult } from "../managers/InputManager";
 import { HUDManager } from "../managers/HUDManager";
 import { RemotePlayerManager } from "../RemotePlayerManager";
 import type { GameOverData } from "./GameOver";
@@ -122,6 +122,18 @@ export class Main extends Phaser.Scene {
   // ── Waiting-phase overlay (joined while server is in 'ended' phase) ─────
   private _inputFrozen: boolean = false;
 
+  // ── Reconnect status indicator ───────────────────────────────────────────
+  private reconnectText: Phaser.GameObjects.Text | null = null;
+
+  // ── Spawn orientation overlay (YOU ARE HERE + BH label) ─────────────────
+  private spawnLabelTimer: number = 0;          // counts down from 5s; overlay fades out
+  private spawnYouLabel: Phaser.GameObjects.Text | null = null;
+  private spawnBhLabel: Phaser.GameObjects.Text | null = null;
+
+  // ── First-time onboarding tooltip ───────────────────────────────────────
+  private tutorialTimer: number = 0;     // counts down from 10s
+  private tutorialPanel: Phaser.GameObjects.Text | null = null;
+
   constructor() {
     super("Main");
   }
@@ -145,6 +157,19 @@ export class Main extends Phaser.Scene {
 
     // Player
     this.player = new Player(WORLD_SIZE / 2, WORLD_SIZE / 2, STARTING_MASS);
+
+    // Spawn orientation overlay: player starts at the black hole's future epicenter.
+    // World-space text (not scroll-locked) so it stays pinned to the spawn point as the player flies off.
+    this.spawnYouLabel = this.add.text(
+      WORLD_SIZE / 2, WORLD_SIZE / 2 - 60,
+      "YOU ARE HERE",
+      { fontSize: "16px", color: "#00ff88", stroke: "#000", strokeThickness: 4, fontFamily: "monospace", align: "center" }
+    ).setOrigin(0.5).setDepth(15);
+    this.spawnBhLabel = this.add.text(
+      WORLD_SIZE / 2, WORLD_SIZE / 2 + 60,
+      "⬤ BLACK HOLE FORMS HERE — GET OUT",
+      { fontSize: "14px", color: "#ff6666", stroke: "#000", strokeThickness: 4, fontFamily: "monospace", align: "center" }
+    ).setOrigin(0.5).setDepth(15);
 
     // Seed initial dust scattered around the world
     this.dust = [];
@@ -211,6 +236,10 @@ export class Main extends Phaser.Scene {
     this.bhCameraShakeCooldown = 0;
     this.climaxWarningFired = false;
     this.lastMassMilestone = STARTING_MASS;
+    this.reconnectText = null;
+    this.spawnLabelTimer = 5.0;
+    this.tutorialPanel = null;
+    this.tutorialTimer = 0;
     this.remoteManager?.destroy();
     this.remoteManager = new RemotePlayerManager(this);
     for (const lbl of this.botNameLabels.values()) lbl.destroy();
@@ -349,11 +378,53 @@ export class Main extends Phaser.Scene {
       });
     });
 
+    // ── Reconnect status indicator ──────────────────────────────────────
+    this.net?.onReconnecting((attempt, max) => {
+      if (!this.reconnectText) {
+        this.reconnectText = this.add.text(
+          this.scale.width / 2, this.scale.height / 2,
+          "",
+          { fontSize: "22px", color: "#ffaa00", stroke: "#000", strokeThickness: 4, fontFamily: "monospace", align: "center" }
+        ).setScrollFactor(0).setDepth(250).setOrigin(0.5);
+      }
+      this.reconnectText.setText(`RECONNECTING...\n(${attempt}/${max})`).setVisible(true);
+    });
+    this.net?.onReconnected(() => {
+      this.reconnectText?.setVisible(false);
+    });
+    this.net?.onDisconnected(() => {
+      if (this.reconnectText) {
+        this.reconnectText.setText("CONNECTION LOST\nReturning to Lobby...").setColor("#ff4444");
+      }
+      this.time.delayedCall(3000, () => { this.scene.start("Lobby"); });
+    });
+
     // Re-stake: React layer dispatches this after a successful on-chain restake
     const onRestakeDone = () => this.scene.restart();
     window.addEventListener("omnivi:restake_done", onRestakeDone, { once: true });
     this.events.once('shutdown', () =>
       window.removeEventListener("omnivi:restake_done", onRestakeDone));
+
+    // ── First-time onboarding tooltip (10 seconds, localStorage-gated) ────
+    if (!localStorage.getItem("omnivi_tutorial_shown")) {
+      localStorage.setItem("omnivi_tutorial_shown", "1");
+      this.tutorialTimer = 10.0;
+      this.tutorialPanel = this.add.text(
+        this.scale.width / 2, this.scale.height - 64,
+        "CONTROLS: W/Up/Mouse = thrust  |  Eat dust to grow  |  Avoid the BLACK HOLE  |  E near the edge = Escape\n[Press any key to dismiss]",
+        {
+          fontSize: "14px", color: "#ffffff", stroke: "#000", strokeThickness: 3,
+          fontFamily: "monospace", align: "center",
+          backgroundColor: "#000000bb", padding: { x: 12, y: 8 },
+        }
+      ).setScrollFactor(0).setDepth(240).setOrigin(0.5, 1);
+
+      this.input.keyboard?.once("keydown", () => {
+        this.tutorialPanel?.destroy();
+        this.tutorialPanel = null;
+        this.tutorialTimer = 0;
+      });
+    }
 
     // Sound (create after scene is active so AudioContext has a user gesture)
     this.sfx = new SfxManager();
@@ -392,6 +463,23 @@ export class Main extends Phaser.Scene {
     }
     this.absorbSfxCooldown = Math.max(0, this.absorbSfxCooldown - dt);
     if (this.spawnProtectTimer > 0) this.spawnProtectTimer = Math.max(0, this.spawnProtectTimer - dt);
+    if (this.spawnLabelTimer > 0) {
+      this.spawnLabelTimer = Math.max(0, this.spawnLabelTimer - dt);
+      const labelAlpha = Math.min(1, this.spawnLabelTimer / 2); // hold, then fade over final 2s
+      this.spawnYouLabel?.setAlpha(labelAlpha);
+      this.spawnBhLabel?.setAlpha(labelAlpha);
+      if (this.spawnLabelTimer <= 0) {
+        this.spawnYouLabel?.destroy(); this.spawnYouLabel = null;
+        this.spawnBhLabel?.destroy(); this.spawnBhLabel = null;
+      }
+    }
+    if (this.tutorialTimer > 0) {
+      this.tutorialTimer = Math.max(0, this.tutorialTimer - dt);
+      if (this.tutorialTimer <= 0) {
+        this.tutorialPanel?.destroy();
+        this.tutorialPanel = null;
+      }
+    }
 
     // ── Freeze game logic when ended; still draw and handle R key ───────
     if (this.phase === 'escaped' || this.phase === 'consumed') {
@@ -408,6 +496,10 @@ export class Main extends Phaser.Scene {
     }
 
     // ── Compute aim direction and thrust intent ─────────────────────────
+    // Read once per frame: Phaser's JustDown() consumes its internal flag on
+    // first read, so calling getActions() again later in the same frame would
+    // always see the other three actions as already-consumed/false.
+    const actions = this.inputMgr.getActions();
     const mv = this.inputMgr.getMovement(this.player.x, this.player.y, dt);
     this.player.rotation += mv.rotDelta;
     if (mv.dx !== 0 || mv.dy !== 0) {
@@ -697,7 +789,7 @@ export class Main extends Phaser.Scene {
     }
 
     // ── Skill abilities: boost burst, mass eject, shield ──────────────
-    this.updateSkills(dt);
+    this.updateSkills(dt, actions);
     this.updateCombo(dt);
 
     // ── PvP: player absorbs / is absorbed by remote players ────────────
@@ -709,7 +801,7 @@ export class Main extends Phaser.Scene {
     // ── The Big Shrink: black hole physics ─────────────────────────────
     if (this.phase === 'shrinking') {
       this.updateBlackHole(dt);
-      this.updateEscape(dt);
+      this.updateEscape(dt, actions);
     }
 
     // ── Juice: particles, float labels, sounds ──────────────────────────
@@ -889,9 +981,9 @@ export class Main extends Phaser.Scene {
   }
 
   // ─── Escape Sequence Update ────────────────────────────────────────────────
-  private updateEscape(dt: number) {
+  private updateEscape(dt: number, actions: ActionResult) {
     // E key: start or cancel escape
-    if (this.inputMgr.getActions().escape) {
+    if (actions.escape) {
       if (!this.escaping) {
         const distFromCenter = Math.hypot(
           this.player.x - WORLD_SIZE / 2,
@@ -947,10 +1039,9 @@ export class Main extends Phaser.Scene {
   }
 
   // ─── Skill Abilities: Boost + Mass Eject + Shield ──────────────────────────
-  private updateSkills(dt: number) {
+  private updateSkills(dt: number, actions: ActionResult) {
     this.slingshotCooldown = Math.max(0, this.slingshotCooldown - dt);
-    // Abilities disabled for simplicity — just thrust, gravity, and collisions
-    return;
+    // Enable skill abilities
 
     this.boostCooldown    = Math.max(0, this.boostCooldown - dt);
     this.ejectCooldown    = Math.max(0, this.ejectCooldown - dt);
@@ -966,7 +1057,7 @@ export class Main extends Phaser.Scene {
     this.shieldCooldown = Math.max(0, this.shieldCooldown - dt);
 
     // BOOST BURST — Shift key: spend 5% mass for a velocity impulse
-    if (this.inputMgr.getActions().boost) {
+    if (actions.boost) {
       if (this.boostCooldown <= 0 && this.player.mass > 100) {
         const massCost = Math.max(15, this.player.mass * BOOST_MASS_COST_PCT);
         this.player.mass = Math.max(15, this.player.mass - massCost);
@@ -983,7 +1074,7 @@ export class Main extends Phaser.Scene {
     }
 
     // MASS EJECT — Q key: eject 10% mass as fast projectile
-    if (this.inputMgr.getActions().eject) {
+    if (actions.eject) {
       if (this.ejectCooldown <= 0 && this.player.mass > 80) {
         const ejMass = Phaser.Math.Clamp(
           this.player.mass * EJECT_MASS_PCT,
@@ -1940,15 +2031,17 @@ export class Main extends Phaser.Scene {
     if (speed < MIN_SPEED) return;
     const t = Math.min(1, (speed - MIN_SPEED) / 300); // 0 at 200px/s → 1 at 500px/s
     if (t < 0.05) return;
-    const gw    = this.scale.width;
-    const gh    = this.scale.height;
-    const cx    = gw / 2;
-    const cy    = gh / 2;
+    // Anchor on the player's actual screen position rather than the viewport
+    // centre — camera.centerOn matches these most of the time, but bounds
+    // clamping near the world edge pushes the player off-centre.
+    const cam   = this.cameras.main;
+    const cx    = (this.player.x - cam.worldView.x) * cam.zoom;
+    const cy    = (this.player.y - cam.worldView.y) * cam.zoom;
     const angle = Math.atan2(this.player.vy, this.player.vx);
     const count = Math.floor(t * 10) + 2;
     for (let i = 0; i < count; i++) {
-      // Spread evenly + slight offset — deterministic per i so no flicker
-      const spread   = ((i / count) - 0.5) * Math.PI * 1.3;
+      // Tight cone opposite the travel direction, not a starburst — deterministic per i so no flicker
+      const spread   = ((i / count) - 0.5) * Math.PI * 0.25;
       const lineAng  = angle + spread + Math.PI;
       const startD   = 50 + (i * 23) % 120;
       const len      = 25 + t * 70;

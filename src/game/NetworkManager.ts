@@ -155,6 +155,10 @@ export class NetworkManager {
   private _onServerDustAdded: ((id: string, x: number, y: number, mass: number, kind: string) => void) | null = null;
   /** Fires when a server dust particle is absorbed (by any player) or expires. */
   private _onServerDustRemoved: ((id: string) => void) | null = null;
+  /** Fires on each reconnect attempt with (attempt, maxAttempts). */
+  private _onReconnecting: ((attempt: number, max: number) => void) | null = null;
+  /** Fires when reconnect succeeds after a disconnect. */
+  private _onReconnected: (() => void) | null = null;
   /** Fires after all reconnect attempts fail (unexpected disconnect). */
   private _onDisconnected: (() => void) | null = null;
   /** Last server-authoritative mass for the local player (0 = not yet received). */
@@ -274,6 +278,7 @@ export class NetworkManager {
     if (code === 1000 || this._intentionalLeave) return;
     console.log(`[Net] Connection dropped (code ${code}), attempting reconnect...`);
     for (let attempt = 1; attempt <= RECONNECT_MAX_ATTEMPTS; attempt++) {
+      this._onReconnecting?.(attempt, RECONNECT_MAX_ATTEMPTS);
       await new Promise<void>(res => setTimeout(res, RECONNECT_DELAY_MS));
       try {
         console.log(`[Net] Reconnect attempt ${attempt}/${RECONNECT_MAX_ATTEMPTS}`);
@@ -284,6 +289,7 @@ export class NetworkManager {
         this._attachHandlers(newRoom);
         newRoom.onLeave((c: number) => { void this._handleLeave(c); });
         console.log(`[Net] Reconnected successfully on attempt ${attempt}`);
+        this._onReconnected?.();
         return;
       } catch (e) {
         console.warn(`[Net] Reconnect attempt ${attempt} failed:`, e);
@@ -411,6 +417,16 @@ export class NetworkManager {
   /** Called when a server dust particle is absorbed or expires. Mark the local copy inactive. */
   onServerDustRemoved(cb: (id: string) => void): void {
     this._onServerDustRemoved = cb;
+  }
+
+  /** Called on each reconnect attempt (attempt, maxAttempts). Use to show a status indicator. */
+  onReconnecting(cb: (attempt: number, max: number) => void): void {
+    this._onReconnecting = cb;
+  }
+
+  /** Called when a reconnect succeeds. Use to hide the status indicator. */
+  onReconnected(cb: () => void): void {
+    this._onReconnected = cb;
   }
 
   /** Called after all reconnect attempts fail. Use to navigate to GameOver/Lobby. */

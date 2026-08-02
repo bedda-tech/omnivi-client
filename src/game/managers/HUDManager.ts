@@ -129,9 +129,12 @@ export class HUDManager {
       .text(16, 16, "", { fontSize: "16px", color: "#ffffff", stroke: "#000000", strokeThickness: 3, lineSpacing: 4 })
       .setScrollFactor(0).setDepth(20);
 
+    const isTouch = this.scene.sys.game.device.input.touch;
+    const controlsHint = isTouch
+      ? "Left stick: aim & thrust\nBottom-right buttons: boost / eject / shield / escape"
+      : "Mouse/Touch: point to aim  |  Hold: thrust\nWASD / Arrow keys: rotate & thrust\nShift: boost  |  Q: eject mass  |  E: begin escape  |  F: shield";
     this.scene.add
-      .text(16, 136,
-        "Mouse/Touch: point to aim  |  Hold: thrust\nWASD / Arrow keys: rotate & thrust\nShift: boost  |  Q: eject mass  |  E: begin escape  |  F: shield",
+      .text(16, 136, controlsHint,
         { fontSize: "12px", color: "#aaaaaa", stroke: "#000000", strokeThickness: 2 })
       .setScrollFactor(0).setDepth(20);
 

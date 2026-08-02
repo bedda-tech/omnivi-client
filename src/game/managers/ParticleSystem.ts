@@ -105,23 +105,30 @@ export class ParticleSystem {
     }
   }
 
-  /** Draw speed lines in screen-space into vignetteGfx (call after clear). */
+  /**
+   * Draw speed lines in screen-space into vignetteGfx (call after clear).
+   * screenX/screenY must be the player's actual screen position (not the
+   * viewport centre) — camera bounds clamping near world edges pushes the
+   * player off-centre, and anchoring to gw/gh made the lines radiate from
+   * the wrong point.
+   */
   drawSpeedLines(
     speed: number,
     vignetteGfx: Phaser.GameObjects.Graphics,
-    gw: number, gh: number,
+    screenX: number, screenY: number,
     playerVx: number, playerVy: number,
   ) {
     const MIN_SPEED = 200;
     if (speed < MIN_SPEED) return;
     const t = Math.min(1, (speed - MIN_SPEED) / 300);
     if (t < 0.05) return;
-    const cx    = gw / 2;
-    const cy    = gh / 2;
+    const cx    = screenX;
+    const cy    = screenY;
     const angle = Math.atan2(playerVy, playerVx);
     const count = Math.floor(t * 10) + 2;
     for (let i = 0; i < count; i++) {
-      const spread   = ((i / count) - 0.5) * Math.PI * 1.3;
+      // Tight cone opposite travel direction, not a starburst
+      const spread   = ((i / count) - 0.5) * Math.PI * 0.25;
       const lineAng  = angle + spread + Math.PI;
       const startD   = 50 + (i * 23) % 120;
       const len      = 25 + t * 70;
