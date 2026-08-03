@@ -1,6 +1,7 @@
 import { Scene, GameObjects } from "phaser";
 import { RoundResult, TIER_INFO, ClaimReadyPayload } from "../NetworkManager";
 import { connectWallet, submitClaim, submitRestake } from "../blockchain/ClaimClient";
+import { NET_AFTER_RAKE } from "../constants";
 
 export interface RoundResultsData {
   results: RoundResult[];
@@ -109,7 +110,7 @@ export class RoundResults extends Scene {
       const bonusMult  = escaped && myRank >= 1 && myRank <= 3 ? BONUS_TABLE[myRank - 1] : 1.0;
       const finalVI    = Math.floor(myResult.mass);
       const boostedVI  = Math.floor(finalVI * bonusMult);
-      const netVI      = Math.floor(boostedVI * 0.97);
+      const netVI      = Math.floor(boostedVI * NET_AFTER_RAKE);
       const profitVI   = netVI - buyIn;
 
       const panelW = 520;

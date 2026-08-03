@@ -49,6 +49,12 @@ export const ESCAPE_DISRUPT_RATIO = 0.5;   // disrupted if hit by object > this 
 // ─── Spawn Protection ───────────────────────────────────────────────────────
 export const SPAWN_PROTECT_SECS = 5; // seconds of invulnerability after spawning
 
+// ─── Economy ────────────────────────────────────────────────────────────────
+// Must match GameVault.sol RAKE_BPS (300 = 3%) — rake is deducted ONCE, on-chain.
+// Client-side numbers here are display-only estimates and must agree with that.
+export const RAKE_PCT = 0.03;
+export const NET_AFTER_RAKE = 1 - RAKE_PCT;
+
 // ─── Skill Abilities ─────────────────────────────────────────────────────────
 export const BOOST_MASS_COST_PCT = 0.05;   // 5% of mass spent per boost
 export const BOOST_IMPULSE       = 350;    // px/s velocity impulse on boost

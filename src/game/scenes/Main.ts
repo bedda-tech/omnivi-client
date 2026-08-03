@@ -12,7 +12,7 @@ import {
   EJECT_MASS_MIN, EJECT_MASS_MAX, EJECT_SPEED, EJECT_COOLDOWN, CLUTCH_MASS_THRESH,
   SHIELD_MASS_COST_PCT, SHIELD_DURATION, SHIELD_COOLDOWN, COMBO_TIMEOUT,
   COMBO_ANNOUNCE_THRESHOLDS, BOT_COUNT, BOT_NAMES,
-  BOT_COLORS, massToRadius,
+  BOT_COLORS, massToRadius, NET_AFTER_RAKE,
   type GamePhase,
 } from "../constants";
 import { SfxManager } from "../managers/SfxManager";
@@ -875,7 +875,7 @@ export class Main extends Phaser.Scene {
       const RANK_MULTS = [1.50, 1.25, 1.10];
       const myMult = myRank <= 3 ? RANK_MULTS[myRank - 1] : 1.0;
       const vi = Math.floor(this.player.mass);
-      const estimatedPayout = Math.floor(vi * myMult * 0.95);
+      const estimatedPayout = Math.floor(vi * myMult * NET_AFTER_RAKE);
       const prizePool = this.net ? Math.floor(this.net.gameState.prizePool) : this.buyInTokens;
       this.hud.updateMassHUD({
         playerMass: this.player.mass,
@@ -1463,7 +1463,7 @@ export class Main extends Phaser.Scene {
     const BONUS_TABLE = [1.50, 1.25, 1.10] as const;
     const bonusMult = escaped && rank >= 1 && rank <= 3 ? BONUS_TABLE[rank - 1] : 1.0;
     const finalVI   = Math.floor(this.player.mass);
-    const netVI     = escaped ? Math.floor(finalVI * bonusMult * 0.97) : 0;
+    const netVI     = escaped ? Math.floor(finalVI * bonusMult * NET_AFTER_RAKE) : 0;
     if (escaped) creditPayout(netVI);
     const newBalance = getViBalance();
     const deltaVI = escaped ? netVI - this.buyInTokens : -this.buyInTokens;
