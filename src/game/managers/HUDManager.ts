@@ -42,6 +42,7 @@ export interface MassHudState {
   boostCooldown: number;
   ejectCooldown: number;
   shieldCooldown: number;
+  brakeCooldown: number;
   estimatedPayout: number;
   myRank: number;
   prizePool: number;
@@ -131,8 +132,8 @@ export class HUDManager {
 
     const isTouch = this.scene.sys.game.device.input.touch;
     const controlsHint = isTouch
-      ? "Left stick: aim & thrust\nBottom-right buttons: boost / eject / shield / escape"
-      : "Mouse/Touch: point to aim  |  Hold: thrust\nWASD / Arrow keys: rotate & thrust\nShift: boost  |  Q: eject mass  |  E: begin escape  |  F: shield";
+      ? "Left stick: aim & thrust\nBottom-right buttons: boost / eject / shield / escape / brake"
+      : "Mouse/Touch: point to aim  |  Hold: thrust\nWASD / Arrow keys: rotate & thrust\nShift: boost  |  Q: eject mass  |  E: begin escape  |  F: shield  |  Space: brake dodge";
     this.scene.add
       .text(16, 136, controlsHint,
         { fontSize: "12px", color: "#aaaaaa", stroke: "#000000", strokeThickness: 2 })
@@ -214,7 +215,7 @@ export class HUDManager {
 
   updateMassHUD(state: MassHudState) {
     const { playerMass, buyInTokens, tierLabel, spawnProtectTimer,
-      boostCooldown, ejectCooldown, shieldCooldown, estimatedPayout, myRank, prizePool } = state;
+      boostCooldown, ejectCooldown, shieldCooldown, brakeCooldown, estimatedPayout, myRank, prizePool } = state;
     const vi = Math.floor(playerMass);
     const deltaVI = vi - buyInTokens;
     const deltaStr = deltaVI >= 0 ? `+${deltaVI}` : `${deltaVI}`;
@@ -228,7 +229,8 @@ export class HUDManager {
     const cdBoost  = boostCooldown  > 0 ? `${boostCooldown.toFixed(1)}s`  : "READY";
     const cdEject  = ejectCooldown  > 0 ? `${ejectCooldown.toFixed(1)}s`  : "READY";
     const cdShield = shieldCooldown > 0 ? `${shieldCooldown.toFixed(1)}s` : "READY";
-    hudLines.push(`Shift:${cdBoost}  Q:${cdEject}  F:${cdShield}`);
+    const cdBrake  = brakeCooldown  > 0 ? `${brakeCooldown.toFixed(1)}s`  : "READY";
+    hudLines.push(`Shift:${cdBoost}  Q:${cdEject}  F:${cdShield}  Space:${cdBrake}`);
     this.massText.setColor(losing ? "#ff3333" : deltaVI > 0 ? "#00ff88" : "#ffffff");
     this.massText.setText(hudLines.join("\n"));
   }

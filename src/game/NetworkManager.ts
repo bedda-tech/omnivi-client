@@ -333,7 +333,7 @@ export class NetworkManager {
    * Notify server that we activated an ability so it can deduct mass server-side.
    * Server recomputes the actual cost from its own mass value.
    */
-  sendUseAbility(type: "boost" | "shield" | "eject"): void {
+  sendUseAbility(type: "boost" | "shield" | "eject" | "brake"): void {
     this.room?.send("use_ability", { type });
   }
 

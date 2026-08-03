@@ -68,6 +68,9 @@ export const CLUTCH_MASS_THRESH  = 150;    // mass below this = clutch escape (f
 export const SHIELD_MASS_COST_PCT = 0.08;  // 8% of mass spent per shield activation
 export const SHIELD_DURATION      = 2.5;   // seconds of invulnerability
 export const SHIELD_COOLDOWN      = 8.0;   // seconds between shield uses
+export const BRAKE_MASS_COST_PCT  = 0.04;  // 4% of mass spent per brake dodge
+export const BRAKE_COOLDOWN       = 3.0;   // seconds between brake dodges
+export const BRAKE_VELOCITY_CUT   = 0.85;  // fraction of current velocity canceled on brake
 export const COMBO_TIMEOUT       = 2.5;    // seconds of inactivity before combo resets
 export const COMBO_ANNOUNCE_THRESHOLDS = [5, 10, 20, 50] as const;
 

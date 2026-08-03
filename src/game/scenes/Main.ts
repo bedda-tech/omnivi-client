@@ -10,7 +10,8 @@ import {
   BH_GRAVITY_MULT, WARN_SECONDS, ESCAPE_DURATION, ESCAPE_MIN_DIST, ESCAPE_DISRUPT_RATIO,
   SPAWN_PROTECT_SECS, BOOST_MASS_COST_PCT, BOOST_IMPULSE, BOOST_COOLDOWN, EJECT_MASS_PCT,
   EJECT_MASS_MIN, EJECT_MASS_MAX, EJECT_SPEED, EJECT_COOLDOWN, CLUTCH_MASS_THRESH,
-  SHIELD_MASS_COST_PCT, SHIELD_DURATION, SHIELD_COOLDOWN, COMBO_TIMEOUT,
+  SHIELD_MASS_COST_PCT, SHIELD_DURATION, SHIELD_COOLDOWN,
+  BRAKE_MASS_COST_PCT, BRAKE_COOLDOWN, BRAKE_VELOCITY_CUT, COMBO_TIMEOUT,
   COMBO_ANNOUNCE_THRESHOLDS, BOT_COUNT, BOT_NAMES,
   BOT_COLORS, massToRadius, NET_AFTER_RAKE,
   type GamePhase,
@@ -92,6 +93,7 @@ export class Main extends Phaser.Scene {
   private ejectCooldown: number = 0;  // seconds until eject is ready
   private shieldTimer: number = 0;    // seconds of shield remaining (0 = off)
   private shieldCooldown: number = 0; // seconds until shield is usable again
+  private brakeCooldown: number = 0;  // seconds until brake dodge is ready
 
   private slingshotCooldown: number = 0; // prevents spam gravity-assist label
 
@@ -226,6 +228,7 @@ export class Main extends Phaser.Scene {
     this.ejectCooldown = 0;
     this.shieldTimer = 0;
     this.shieldCooldown = 0;
+    this.brakeCooldown = 0;
     this.slingshotCooldown = 0;
     this.absorbCombo = 0;
     this.absorbComboTimer = 0;
@@ -885,6 +888,7 @@ export class Main extends Phaser.Scene {
         boostCooldown: this.boostCooldown,
         ejectCooldown: this.ejectCooldown,
         shieldCooldown: this.shieldCooldown,
+        brakeCooldown: this.brakeCooldown,
         estimatedPayout,
         myRank,
         prizePool,
@@ -1045,6 +1049,7 @@ export class Main extends Phaser.Scene {
 
     this.boostCooldown    = Math.max(0, this.boostCooldown - dt);
     this.ejectCooldown    = Math.max(0, this.ejectCooldown - dt);
+    this.brakeCooldown    = Math.max(0, this.brakeCooldown - dt);
 
     // Tick down shield and cooldown
     if (this.shieldTimer > 0) {
@@ -1124,6 +1129,21 @@ export class Main extends Phaser.Scene {
         this.shieldCooldown = SHIELD_COOLDOWN;
         this.sfx.shield();
         this.spawnBurst(this.player.x, this.player.y, 20, 90, 0xffdd00, 0.8);
+      }
+    }
+
+    // BRAKE DODGE — Space key: spend 4% mass to sharply cancel velocity, dodging incoming threats
+    if (actions.brake) {
+      if (this.brakeCooldown <= 0 && this.player.mass > 60) {
+        const massCost = Math.max(10, this.player.mass * BRAKE_MASS_COST_PCT);
+        this.player.mass = Math.max(15, this.player.mass - massCost);
+        this.net?.sendUseAbility("brake");
+        this.player.vx *= (1 - BRAKE_VELOCITY_CUT);
+        this.player.vy *= (1 - BRAKE_VELOCITY_CUT);
+        this.brakeCooldown = BRAKE_COOLDOWN;
+        this.sfx.brake();
+        this.spawnBurst(this.player.x, this.player.y, 14, 60, 0xffffff, 0.6);
+        this.cameras.main.shake(80, 0.005);
       }
     }
   }

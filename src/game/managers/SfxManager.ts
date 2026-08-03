@@ -180,6 +180,12 @@ export class SfxManager {
     this.tone(440, 'sawtooth', 0.18, 0.12, 110);
   }
 
+  brake() {
+    void this.ctx.resume();
+    this.tone(300, 'square', 0.08, 0.22, 90);
+    this.tone(150, 'sine',   0.15, 0.12, 60);
+  }
+
   warnCountdown(urgency: number) {
     void this.ctx.resume();
     if (urgency === 0) {

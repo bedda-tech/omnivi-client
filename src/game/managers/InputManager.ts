@@ -12,9 +12,10 @@ export interface ActionResult {
   eject: boolean;   // Q JustDown / EJECT button tap
   shield: boolean;  // F JustDown / SHIELD button tap
   escape: boolean;  // E JustDown / ESC button tap
+  brake: boolean;   // Space JustDown / BRK button tap
 }
 
-type ActionKey = "boost" | "eject" | "shield" | "escape";
+type ActionKey = "boost" | "eject" | "shield" | "escape" | "brake";
 
 interface TouchButtonDef {
   key: ActionKey;
@@ -46,6 +47,7 @@ export class InputManager {
   private keyShift: Phaser.Input.Keyboard.Key;
   private keyQ: Phaser.Input.Keyboard.Key;
   private keyF: Phaser.Input.Keyboard.Key;
+  private keySpace: Phaser.Input.Keyboard.Key;
 
   private pointer: Phaser.Input.Pointer;
   private mouseDown = false;
@@ -70,10 +72,10 @@ export class InputManager {
   // ── On-screen action buttons (touch) ────────────────────────────────────
   private btnDefs: TouchButtonDef[] = [];
   private btnPointerIds: Record<ActionKey, number | null> = {
-    boost: null, eject: null, shield: null, escape: null,
+    boost: null, eject: null, shield: null, escape: null, brake: null,
   };
   private btnPending: Record<ActionKey, boolean> = {
-    boost: false, eject: false, shield: false, escape: false,
+    boost: false, eject: false, shield: false, escape: false, brake: false,
   };
 
   private touchGfx: Phaser.GameObjects.Graphics | null = null;
@@ -90,6 +92,7 @@ export class InputManager {
     this.keyShift = kb.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
     this.keyQ     = kb.addKey(Phaser.Input.Keyboard.KeyCodes.Q);
     this.keyF     = kb.addKey(Phaser.Input.Keyboard.KeyCodes.F);
+    this.keySpace = kb.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
 
     this.useTouch = scene.sys.game.device.input.touch;
     this.pointer  = scene.input.activePointer;
@@ -137,6 +140,7 @@ export class InputManager {
       { key: "boost",  label: "BST",  x: anchorX + half, y: anchorY - half },
       { key: "eject",  label: "EJT",  x: anchorX - half, y: anchorY + half },
       { key: "escape", label: "ESC",  x: anchorX + half, y: anchorY + half },
+      { key: "brake",  label: "BRK",  x: anchorX,         y: anchorY - half - BTN_GAP },
     ];
   }
 
@@ -306,13 +310,15 @@ export class InputManager {
     const eject  = Phaser.Input.Keyboard.JustDown(this.keyQ);
     const shield = Phaser.Input.Keyboard.JustDown(this.keyF);
     const escape = Phaser.Input.Keyboard.JustDown(this.keyE);
+    const brake  = Phaser.Input.Keyboard.JustDown(this.keySpace);
 
-    if (!this.useTouch) return { boost, eject, shield, escape };
+    if (!this.useTouch) return { boost, eject, shield, escape, brake };
     return {
       boost:  boost  || this.consumeButton("boost"),
       eject:  eject  || this.consumeButton("eject"),
       shield: shield || this.consumeButton("shield"),
       escape: escape || this.consumeButton("escape"),
+      brake:  brake  || this.consumeButton("brake"),
     };
   }
 }
