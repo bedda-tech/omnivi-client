@@ -20,6 +20,7 @@ import { SfxManager } from "../managers/SfxManager";
 import { PhysicsManager } from "../managers/PhysicsManager";
 import { InputManager, ActionResult } from "../managers/InputManager";
 import { HUDManager } from "../managers/HUDManager";
+import { BotManager } from "../managers/BotManager";
 import { RemotePlayerManager } from "../RemotePlayerManager";
 import type { GameOverData } from "./GameOver";
 import {
@@ -29,10 +30,10 @@ import {
 
 // ─── Main Scene ────────────────────────────────────────────────────────────
 export class Main extends Phaser.Scene {
-  private player!: Player;
-  private dust: DustParticle[] = [];
-  private asteroids: Asteroid[] = [];
-  private bots: BotPlayer[] = [];
+  player!: Player;
+  dust: DustParticle[] = [];
+  asteroids: Asteroid[] = [];
+  bots: BotPlayer[] = [];
   /** World-space name labels for bots, keyed by bot name. */
   private botNameLabels = new Map<string, Phaser.GameObjects.Text>();
 
@@ -41,13 +42,14 @@ export class Main extends Phaser.Scene {
   private vignetteGfx!: Phaser.GameObjects.Graphics;  // screen-space overlay
 
   // HUD manager — owns all HUD text/graphics objects
-  private hud!: HUDManager;
+  hud!: HUDManager;
 
   // Input
   private inputMgr!: InputManager;
+  private botMgr!: BotManager;
 
   // ── Multiplayer ─────────────────────────────────────────────────────────
-  private net: NetworkManager | null = null;
+  net: NetworkManager | null = null;
   private sendTimer: number = 0;    // seconds since last network send
   private readonly SEND_RATE = 1 / 20; // 20 Hz
   /**
@@ -71,7 +73,7 @@ export class Main extends Phaser.Scene {
   /** True when entered via ?mode=practice — skips wallet and VI deduction. */
   private practiceMode: boolean = false;
   // ── Sound ────────────────────────────────────────────────────────────────
-  private sfx!: SfxManager;
+  sfx!: SfxManager;
   private wasThrusting: boolean = false;
   private absorbSfxCooldown: number = 0; // seconds until next dust-absorb sound
 
@@ -79,19 +81,19 @@ export class Main extends Phaser.Scene {
   private particles: BurstParticle[] = [];
   private trailPoints: TrailPoint[] = [];
   private floatLabels: FloatLabel[] = [];
-  private pvpKillGlowTimer: number = 0;   // seconds of gold border glow after eating a player
+  pvpKillGlowTimer: number = 0;   // seconds of gold border glow after eating a player
   private bhRumbleCooldown: number = 0;   // throttle BH rumble sound
   private heartbeatCooldown: number = 0;  // throttle heartbeat sound
-  private absorbFlashTimer: number = 0;   // white impact flash on player after absorbing
-  private killStreak: number = 0;         // consecutive kills before dying
-  private killStreakTimer: number = 0;    // decay timer — resets streak after inactivity
-  private pvpKills: number = 0;          // total kills this round (players + bots)
+  absorbFlashTimer: number = 0;   // white impact flash on player after absorbing
+  killStreak: number = 0;         // consecutive kills before dying
+  killStreakTimer: number = 0;    // decay timer — resets streak after inactivity
+  pvpKills: number = 0;          // total kills this round (players + bots)
   private lastMassMilestone: number = 0; // last mass threshold announced
 
   // ── Skill ability state ──────────────────────────────────────────────
   private boostCooldown: number = 0;  // seconds until boost is ready
   private ejectCooldown: number = 0;  // seconds until eject is ready
-  private shieldTimer: number = 0;    // seconds of shield remaining (0 = off)
+  shieldTimer: number = 0;    // seconds of shield remaining (0 = off)
   private shieldCooldown: number = 0; // seconds until shield is usable again
   private brakeCooldown: number = 0;  // seconds until brake dodge is ready
 
@@ -104,15 +106,15 @@ export class Main extends Phaser.Scene {
   private comboAnnounced = new Set<number>();           // thresholds already shown
 
   // ── Game phase / Big Shrink state ──────────────────────────────────────
-  private phase!: GamePhase;
+  phase!: GamePhase;
   private gameTimer!: number;       // seconds elapsed since game start
   private shrinkTimer!: number;     // seconds elapsed since shrink started
-  private bhMass!: number;          // black hole mass (grows during shrink)
+  bhMass!: number;          // black hole mass (grows during shrink)
   private worldRadius: number = WORLD_SIZE / 2; // shrinking boundary radius (synced from server)
   private escaping!: boolean;       // player is in escape countdown
   private escapeTimer!: number;     // seconds remaining in escape countdown
   private disruptFlash!: number;    // seconds remaining for disruption red flash
-  private spawnProtectTimer!: number; // seconds of invulnerability remaining
+  spawnProtectTimer!: number; // seconds of invulnerability remaining
 
   // ── Round pacing / tension curve ──────────────────────────────────────
   private warningFlash: number = 0;             // seconds of warning screen flash
@@ -261,6 +263,9 @@ export class Main extends Phaser.Scene {
 
     // Input — keyboard, mouse/touch, gamepad
     this.inputMgr = new InputManager(this);
+
+    // Bot AI + all bot-involved collisions
+    this.botMgr = new BotManager(this);
 
     // Initial camera
     this.cameras.main.setZoom(1);
@@ -1149,7 +1154,7 @@ export class Main extends Phaser.Scene {
   }
 
   /** Increment the absorption combo and announce at key thresholds. */
-  private bumpCombo(amount: number = 1) {
+  bumpCombo(amount: number = 1) {
     this.absorbCombo += amount;
     this.absorbComboTimer = COMBO_TIMEOUT;
     if (this.absorbCombo > this.bestCombo) this.bestCombo = this.absorbCombo;
@@ -1174,7 +1179,7 @@ export class Main extends Phaser.Scene {
   }
 
   /** Spawn debris from a collision as dust particles or asteroids. */
-  private spawnCollisionDebris(debris: { x: number; y: number; vx: number; vy: number; mass: number }[]) {
+  spawnCollisionDebris(debris: { x: number; y: number; vx: number; vy: number; mass: number }[]) {
     for (const d of debris) {
       if (this.dust.length >= MAX_DUST) break;
       const particle = new DustParticle(d.x, d.y, d.vx, d.vy, d.mass);
@@ -1263,177 +1268,10 @@ export class Main extends Phaser.Scene {
 
   // ─── Bot Update ────────────────────────────────────────────────────────────
   private updateBots(dt: number) {
-    if (this.phase === 'escaped' || this.phase === 'consumed') return;
-
-    for (const bot of this.bots) {
-      if (!bot.active) continue;
-
-      bot.updateAI(dt, this.player, this.dust, this.asteroids, this.phase, WORLD_SIZE / 2, WORLD_SIZE / 2, this.bhMass, this.bots);
-      bot.updatePhysics(dt);
-
-      // BH gravity + consumption during shrink phase
-      if (this.phase === 'shrinking') {
-        const bx  = WORLD_SIZE / 2;
-        const by  = WORLD_SIZE / 2;
-        const bhR = massToRadius(this.bhMass);
-        const bhG = GRAVITY_G * BH_GRAVITY_MULT;
-        const dx  = bx - bot.x;
-        const dy  = by - bot.y;
-        const dSq = Math.max(dx * dx + dy * dy, GRAVITY_MIN_DIST_SQ);
-        const dist = Math.sqrt(dSq);
-        let ax = bhG * this.bhMass / dSq * dx / dist;
-        let ay = bhG * this.bhMass / dSq * dy / dist;
-        const mag = Math.hypot(ax, ay);
-        if (mag > MAX_G_ACCEL) { ax = ax / mag * MAX_G_ACCEL; ay = ay / mag * MAX_G_ACCEL; }
-        bot.vx += ax * dt;
-        bot.vy += ay * dt;
-        if (dist < bhR + bot.radius) { bot.active = false; continue; }
-      }
-
-      // Bot absorbs dust (contact only)
-      let dustAbsorbed = false;
-      for (const d of this.dust) {
-        if (!d.active) continue;
-        if (bot.mass < d.mass * ABSORB_RATIO) continue;
-        const dx = d.x - bot.x;
-        const dy = d.y - bot.y;
-        if (dx * dx + dy * dy < (bot.radius + d.radius) ** 2) {
-          const tm = bot.mass + d.mass;
-          bot.vx = (bot.vx * bot.mass + d.vx * d.mass) / tm;
-          bot.vy = (bot.vy * bot.mass + d.vy * d.mass) / tm;
-          bot.mass = tm;
-          d.active = false;
-          dustAbsorbed = true;
-        }
-      }
-      if (dustAbsorbed) this.dust = this.dust.filter(d => d.active);
-
-      // Bot ↔ Asteroid collision
-      let asteroidAbsorbed = false;
-      for (const a of this.asteroids) {
-        if (!a.active) continue;
-        const dx = a.x - bot.x;
-        const dy = a.y - bot.y;
-        if (dx * dx + dy * dy >= (bot.radius + a.radius) ** 2) continue;
-        if (bot.mass >= a.mass * ABSORB_RATIO) {
-          const tm = bot.mass + a.mass;
-          bot.vx = (bot.vx * bot.mass + a.vx * a.mass) / tm;
-          bot.vy = (bot.vy * bot.mass + a.vy * a.mass) / tm;
-          bot.mass = tm;
-          a.active = false;
-          asteroidAbsorbed = true;
-        } else if (a.mass >= bot.mass * ABSORB_RATIO) {
-          const tm = a.mass + bot.mass;
-          a.vx = (a.vx * a.mass + bot.vx * bot.mass) / tm;
-          a.vy = (a.vy * a.mass + bot.vy * bot.mass) / tm;
-          a.mass = tm;
-          bot.active = false;
-          break;
-        } else {
-          const bBody = { x: bot.x, y: bot.y, vx: bot.vx, vy: bot.vy, mass: bot.mass, radius: bot.radius };
-          const aBody = { x: a.x, y: a.y, vx: a.vx, vy: a.vy, mass: a.mass, radius: a.radius };
-          const debris = PhysicsManager.resolveElasticCollision(bBody, aBody);
-          bot.x = bBody.x; bot.y = bBody.y; bot.vx = bBody.vx; bot.vy = bBody.vy; bot.mass = bBody.mass;
-          a.x = aBody.x; a.y = aBody.y; a.vx = aBody.vx; a.vy = aBody.vy; a.mass = aBody.mass;
-          if (debris.length > 0) this.spawnCollisionDebris(debris);
-        }
-      }
-      if (asteroidAbsorbed) this.asteroids = this.asteroids.filter(a => a.active);
-      if (!bot.active) continue;
-
-      // Player ↔ Bot collision
-      {
-        const dx = bot.x - this.player.x;
-        const dy = bot.y - this.player.y;
-        const distSq = dx * dx + dy * dy;
-        const touchDist = this.player.radius + bot.radius;
-        if (distSq < touchDist * touchDist) {
-          if (bot.mass >= this.player.mass * ABSORB_RATIO && this.spawnProtectTimer <= 0 && this.shieldTimer <= 0) {
-            // Bot absorbs player
-            this.phase = 'consumed';
-            this.showEndScreen(false, `ABSORBED BY ${bot.name}`);
-            return;
-          } else if (this.player.mass >= bot.mass * ABSORB_RATIO) {
-            // Player absorbs bot
-            const tm = this.player.mass + bot.mass;
-            this.player.vx = (this.player.vx * this.player.mass + bot.vx * bot.mass) / tm;
-            this.player.vy = (this.player.vy * this.player.mass + bot.vy * bot.mass) / tm;
-            this.player.mass = tm;
-            this.net?.sendAbsorb("bot", bot.mass);
-            bot.active = false;
-            this.sfx.absorb(bot.mass);
-            this.absorbFlashTimer = 0.35;
-            this.bumpCombo(10);
-            this.killStreak++;
-            this.pvpKills++;
-            this.killStreakTimer = 4.0;
-            this.pvpKillGlowTimer = 2.0 + this.killStreak * 0.5;
-            this.cameras.main.shake(350, 0.015);
-            this.spawnBurst(bot.x, bot.y, 40, 190, 0xff7700, 1.1);
-            this.spawnFloatLabel(bot.x, bot.y, bot.mass, 0xff7700);
-            this.hud.pushKillFeed(`YOU absorbed ${bot.name}`, 0xff9900);
-            if (this.killStreak >= 2) {
-              this.hud.triggerMilestone(`KILL STREAK ×${this.killStreak}!`, 2.2);
-            }
-          } else {
-            // Similar size: elastic collision
-            const pBody = { x: this.player.x, y: this.player.y, vx: this.player.vx, vy: this.player.vy, mass: this.player.mass, radius: this.player.radius };
-            const bBody = { x: bot.x, y: bot.y, vx: bot.vx, vy: bot.vy, mass: bot.mass, radius: bot.radius };
-            const debris = PhysicsManager.resolveElasticCollision(pBody, bBody);
-            this.player.x = pBody.x; this.player.y = pBody.y;
-            this.player.vx = pBody.vx; this.player.vy = pBody.vy;
-            this.player.mass = pBody.mass;
-            bot.x = bBody.x; bot.y = bBody.y;
-            bot.vx = bBody.vx; bot.vy = bBody.vy;
-            bot.mass = bBody.mass;
-            if (debris.length > 0) {
-              this.spawnCollisionDebris(debris);
-              this.cameras.main.shake(180, 0.006);
-              this.spawnBurst((this.player.x + bot.x) / 2, (this.player.y + bot.y) / 2, 12, 100, 0xff8844, 0.5);
-            }
-          }
-        }
-      }
-
-      // Bot ↔ Bot collision
-      for (const other of this.bots) {
-        if (!other.active || other === bot) continue;
-        const dx = other.x - bot.x;
-        const dy = other.y - bot.y;
-        const distSq = dx * dx + dy * dy;
-        const touchDist = bot.radius + other.radius;
-        if (distSq >= touchDist * touchDist) continue;
-        if (bot.mass >= other.mass * ABSORB_RATIO) {
-          // bot absorbs other
-          const tm = bot.mass + other.mass;
-          bot.vx = (bot.vx * bot.mass + other.vx * other.mass) / tm;
-          bot.vy = (bot.vy * bot.mass + other.vy * other.mass) / tm;
-          bot.mass = tm;
-          other.active = false;
-        } else if (other.mass >= bot.mass * ABSORB_RATIO) {
-          // other absorbs bot
-          const tm = other.mass + bot.mass;
-          other.vx = (other.vx * other.mass + bot.vx * bot.mass) / tm;
-          other.vy = (other.vy * other.mass + bot.vy * bot.mass) / tm;
-          other.mass = tm;
-          bot.active = false;
-          break;
-        } else {
-          // Similar size: elastic collision between bots
-          const bA = { x: bot.x, y: bot.y, vx: bot.vx, vy: bot.vy, mass: bot.mass, radius: bot.radius };
-          const bB = { x: other.x, y: other.y, vx: other.vx, vy: other.vy, mass: other.mass, radius: other.radius };
-          const debris = PhysicsManager.resolveElasticCollision(bA, bB);
-          bot.x = bA.x; bot.y = bA.y; bot.vx = bA.vx; bot.vy = bA.vy; bot.mass = bA.mass;
-          other.x = bB.x; other.y = bB.y; other.vx = bB.vx; other.vy = bB.vy; other.mass = bB.mass;
-          if (debris.length > 0) this.spawnCollisionDebris(debris);
-        }
-      }
-    }
-
-    this.bots = this.bots.filter(b => b.active);
+    this.botMgr.update(dt);
   }
 
-  private showEndScreen(escaped: boolean, deathMessage?: string) {
+  showEndScreen(escaped: boolean, deathMessage?: string) {
     const timeSurvived = Math.floor(this.gameTimer);
 
     // Compute rank among all players (local + alive remotes + alive bots)
@@ -1873,7 +1711,7 @@ export class Main extends Phaser.Scene {
   // ─── Juice helpers ──────────────────────────────────────────────────────
 
   /** Spawn N burst particles at world position (x,y). */
-  private spawnBurst(x: number, y: number, count: number, speed: number, color: number, life: number) {
+  spawnBurst(x: number, y: number, count: number, speed: number, color: number, life: number) {
     for (let i = 0; i < count; i++) {
       const angle = Math.random() * Math.PI * 2;
       const spd   = speed * (0.35 + Math.random() * 0.8);
@@ -1882,7 +1720,7 @@ export class Main extends Phaser.Scene {
   }
 
   /** Spawn a floating "+mass" label at world position (x,y). */
-  private spawnFloatLabel(x: number, y: number, mass: number, color: number = 0x00ff88) {
+  spawnFloatLabel(x: number, y: number, mass: number, color: number = 0x00ff88) {
     const hex   = '#' + color.toString(16).padStart(6, '0');
     const size  = Math.max(14, Math.min(36, 10 + Math.sqrt(mass)));
     const label = this.add.text(x, y, `+${Math.floor(mass)}`, {
