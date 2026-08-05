@@ -4,7 +4,7 @@ import { NetworkManager, getOrCreatePlayerName, getStoredTier, TIER_INFO, deduct
 import { connectWallet } from "../blockchain/ClaimClient";
 import {
   WORLD_SIZE, STARTING_MASS, MAX_SPEED, DUST_EMIT_MASS, INITIAL_DUST_COUNT, MAX_DUST, ABSORB_RATIO,
-  ASTEROID_THRESHOLD, PLANET_THRESHOLD, INITIAL_ASTEROIDS, ASTEROID_VERTICES,
+  ASTEROID_THRESHOLD, PLANET_THRESHOLD, STAR_THRESHOLD, INITIAL_ASTEROIDS, ASTEROID_VERTICES, gravWeight,
   GRAVITY_G, GRAVITY_THETA, GRAVITY_MIN_DIST_SQ,
   MAX_G_ACCEL, SHRINK_START_DELAY, BH_INITIAL_MASS, BH_GROWTH_RATE, BH_GROWTH_ACCEL,
   BH_GRAVITY_MULT, WARN_SECONDS, ESCAPE_DURATION, ESCAPE_MIN_DIST, ESCAPE_DISRUPT_RATIO,
@@ -561,13 +561,13 @@ export class Main extends Phaser.Scene {
           ay += pa * dy / dist;
         }
 
-        // Asteroid gravity wells
+        // Asteroid gravity wells (stars punch above their mass — gravWeight)
         for (const a of this.asteroids) {
           const dx = a.x - d.x;
           const dy = a.y - d.y;
           const dSq = Math.max(dx * dx + dy * dy, GRAVITY_MIN_DIST_SQ);
           const dist = Math.sqrt(dSq);
-          const ag = GRAVITY_G * a.mass / dSq;
+          const ag = GRAVITY_G * gravWeight(a.mass) / dSq;
           ax += ag * dx / dist;
           ay += ag * dy / dist;
         }
@@ -588,21 +588,21 @@ export class Main extends Phaser.Scene {
           const dSq = Math.max(dx * dx + dy * dy, GRAVITY_MIN_DIST_SQ);
           const dist = Math.sqrt(dSq);
           const f = GRAVITY_G / dSq / dist; // precompute /dist
-          a.vx += b.mass * f * dx * dt;
-          a.vy += b.mass * f * dy * dt;
-          b.vx -= a.mass * f * dx * dt;
-          b.vy -= a.mass * f * dy * dt;
+          a.vx += gravWeight(b.mass) * f * dx * dt;
+          a.vy += gravWeight(b.mass) * f * dy * dt;
+          b.vx -= gravWeight(a.mass) * f * dx * dt;
+          b.vy -= gravWeight(a.mass) * f * dy * dt;
         }
       }
 
-      // Asteroid gravity on player (large rocks are dangerous!)
+      // Asteroid gravity on player (large rocks are dangerous! stars are lethal)
       const speedBeforeAsteroidGrav = Math.hypot(this.player.vx, this.player.vy);
       for (const a of this.asteroids) {
         const dx = a.x - this.player.x;
         const dy = a.y - this.player.y;
         const dSq = Math.max(dx * dx + dy * dy, GRAVITY_MIN_DIST_SQ);
         const dist = Math.sqrt(dSq);
-        let ag = GRAVITY_G * a.mass / dSq;
+        let ag = GRAVITY_G * gravWeight(a.mass) / dSq;
         let agx = ag * dx / dist;
         let agy = ag * dy / dist;
         const amag = Math.hypot(agx, agy);
@@ -1916,12 +1916,23 @@ export class Main extends Phaser.Scene {
     const r = a.radius;
     const n = ASTEROID_VERTICES;
 
-    // Color: dark gray → brown → pale gold as mass grows (ASTEROID_THRESHOLD → PLANET_THRESHOLD)
+    // Color: dark gray → brown → pale gold as mass grows (ASTEROID_THRESHOLD → PLANET_THRESHOLD),
+    // then gold → white-hot as it grows into a Star (PLANET_THRESHOLD → STAR_THRESHOLD)
     const t = Math.min(1, Math.log(Math.max(1, a.mass / ASTEROID_THRESHOLD)) / Math.log(PLANET_THRESHOLD / ASTEROID_THRESHOLD));
-    const ri = Math.round(0x66 + t * (0xcc - 0x66));
-    const gi = Math.round(0x55 + t * (0x99 - 0x55));
-    const bi = Math.round(0x44 + t * (0x44 - 0x44));
-    const fillColor = (ri << 16) | (gi << 8) | bi;
+    const isStar = a.mass >= STAR_THRESHOLD;
+    let fillColor: number;
+    if (isStar) {
+      const st = Math.min(1, Math.log(a.mass / PLANET_THRESHOLD) / Math.log(STAR_THRESHOLD / PLANET_THRESHOLD));
+      const ri = Math.round(0xcc + st * (0xff - 0xcc));
+      const gi = Math.round(0x99 + st * (0xff - 0x99));
+      const bi = Math.round(0x44 + st * (0xee - 0x44));
+      fillColor = (ri << 16) | (gi << 8) | bi;
+    } else {
+      const ri = Math.round(0x66 + t * (0xcc - 0x66));
+      const gi = Math.round(0x55 + t * (0x99 - 0x55));
+      const bi = Math.round(0x44 + t * (0x44 - 0x44));
+      fillColor = (ri << 16) | (gi << 8) | bi;
+    }
 
     // Draw filled polygon
     this.gfx.fillStyle(fillColor, 1);
@@ -1953,8 +1964,13 @@ export class Main extends Phaser.Scene {
     this.gfx.closePath();
     this.gfx.strokePath();
 
-    // Planet glow for large bodies
-    if (a.mass >= PLANET_THRESHOLD) {
+    // Planet glow for large bodies; brighter, wider corona once it's a Star
+    if (isStar) {
+      this.gfx.fillStyle(0xffffee, 0.14);
+      this.gfx.fillCircle(a.x, a.y, r * 3.2);
+      this.gfx.fillStyle(0xffffee, 0.05);
+      this.gfx.fillCircle(a.x, a.y, r * 5.0);
+    } else if (a.mass >= PLANET_THRESHOLD) {
       this.gfx.fillStyle(0xffdd44, 0.06);
       this.gfx.fillCircle(a.x, a.y, r * 2.0);
     }

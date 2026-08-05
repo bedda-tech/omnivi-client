@@ -1,6 +1,6 @@
 import Phaser from "phaser";
 import {
-  WORLD_SIZE, PLANET_THRESHOLD, massToRadius,
+  WORLD_SIZE, PLANET_THRESHOLD, STAR_THRESHOLD, massToRadius,
   SHRINK_START_DELAY, ESCAPE_MIN_DIST,
 } from "../constants";
 import type { Asteroid } from "../entities/Asteroid";
@@ -352,9 +352,13 @@ export class HUDManager {
     }
 
     for (const a of asteroids) {
+      const isStar = a.mass >= STAR_THRESHOLD;
       const isPlanet = a.mass >= PLANET_THRESHOLD;
-      this.minimapGfx.fillStyle(isPlanet ? 0xffdd88 : 0x778899, isPlanet ? 0.85 : 0.55);
-      this.minimapGfx.fillCircle(wx(a.x), wy(a.y), isPlanet ? 3 : 1.5);
+      const color = isStar ? 0xffffee : isPlanet ? 0xffdd88 : 0x778899;
+      const alpha = isStar ? 1 : isPlanet ? 0.85 : 0.55;
+      const size = isStar ? 5 : isPlanet ? 3 : 1.5;
+      this.minimapGfx.fillStyle(color, alpha);
+      this.minimapGfx.fillCircle(wx(a.x), wy(a.y), size);
     }
 
     if (net) {

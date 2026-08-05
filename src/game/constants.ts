@@ -14,6 +14,8 @@ export const DUST_RESPAWN_MIN = 150;    // respawn ambient dust when count falls
 // ─── Asteroid ───────────────────────────────────────────────────────────────
 export const ASTEROID_THRESHOLD = 50;  // dust mass at which it graduates to Asteroid
 export const PLANET_THRESHOLD = 1000;  // asteroid mass at which it's labeled a Planet
+export const STAR_THRESHOLD = 10000;   // asteroid mass at which it's labeled a Star (OMNIVI.md Phase 4)
+export const STAR_GRAVITY_MULT = 2.0;  // stars have intensified gravity wells beyond raw mass
 export const INITIAL_ASTEROIDS = 6;    // asteroid bodies seeded at match start
 // No drag in space — all bodies conserve momentum (Newton's 1st law)
 export const ASTEROID_VERTICES = 10;   // polygon vertex count for craggy look
@@ -92,6 +94,11 @@ export type GamePhase = 'playing' | 'shrinking' | 'escaped' | 'consumed';
 // ─── Utilities ──────────────────────────────────────────────────────────────
 export function massToRadius(mass: number): number {
   return Math.sqrt(mass) * RADIUS_SCALE;
+}
+
+/** Effective gravitational mass — stars punch above their weight (intense gravity wells). */
+export function gravWeight(mass: number): number {
+  return mass >= STAR_THRESHOLD ? mass * STAR_GRAVITY_MULT : mass;
 }
 
 /** Convert "hsl(H, S%, L%)" string to a Phaser-compatible 0xRRGGBB number. */
