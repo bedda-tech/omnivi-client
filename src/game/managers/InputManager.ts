@@ -24,6 +24,11 @@ interface TouchButtonDef {
   y: number;
 }
 
+// Dev-only override: force touch controls on regardless of device capability,
+// so the joystick/action-button UI can be tested from a desktop browser
+// without a phone or emulator. Leave false for real builds.
+const FORCE_MOBILE = false;
+
 const JOY_HINT_R   = 50; // idle hint ring radius
 const JOY_BASE_R   = 55; // active base ring radius
 const JOY_THUMB_R  = 24;
@@ -94,7 +99,7 @@ export class InputManager {
     this.keyF     = kb.addKey(Phaser.Input.Keyboard.KeyCodes.F);
     this.keySpace = kb.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
 
-    this.useTouch = scene.sys.game.device.input.touch;
+    this.useTouch = FORCE_MOBILE || scene.sys.game.device.input.touch;
     this.pointer  = scene.input.activePointer;
 
     scene.input.on("pointermove", (p: Phaser.Input.Pointer) => {
