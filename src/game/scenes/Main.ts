@@ -129,6 +129,12 @@ export class Main extends Phaser.Scene {
   // ── Reconnect status indicator ───────────────────────────────────────────
   private reconnectText: Phaser.GameObjects.Text | null = null;
 
+  // ── Spectator mode (after death, while the round is still live) ─────────
+  private endOverlayGfx: Phaser.GameObjects.Graphics | null = null;
+  private spectating: boolean = false;
+  /** "p:<sessionId>" for a remote player, "b:<botName>" for a bot. */
+  private spectateTargetId: string | null = null;
+
   // ── Spawn orientation overlay (YOU ARE HERE + BH label) ─────────────────
   private spawnLabelTimer: number = 0;          // counts down from 5s; overlay fades out
   private spawnYouLabel: Phaser.GameObjects.Text | null = null;
@@ -407,6 +413,11 @@ export class Main extends Phaser.Scene {
       this.time.delayedCall(3000, () => { this.scene.start("Lobby"); });
     });
 
+    // Spectator camera cycling (TAB captured so the browser doesn't shift focus off-canvas)
+    this.input.keyboard?.addCapture('TAB');
+    this.input.keyboard?.on("keydown-TAB", () => this.cycleSpectateTarget());
+    this.input.keyboard?.on("keydown-N", () => this.cycleSpectateTarget());
+
     // Re-stake: React layer dispatches this after a successful on-chain restake
     const onRestakeDone = () => this.scene.restart();
     window.addEventListener("omnivi:restake_done", onRestakeDone, { once: true });
@@ -493,6 +504,7 @@ export class Main extends Phaser.Scene {
     if (this.phase === 'escaped' || this.phase === 'consumed') {
       this.updateJuice(dt); // keep particles / labels animating on end screen
       this.drawVignette();
+      if (this.spectating) this.updateSpectateCamera();
       this.drawScene(dt);
       return;
     }
@@ -1294,6 +1306,7 @@ export class Main extends Phaser.Scene {
     const overlay = this.add.graphics().setScrollFactor(0).setDepth(25);
     overlay.fillStyle(0x000000, 0.65);
     overlay.fillRect(0, 0, gw, gh);
+    this.endOverlayGfx = overlay;
 
     let title: string;
     let titleColor: string;
@@ -1364,7 +1377,73 @@ export class Main extends Phaser.Scene {
       this.time.delayedCall(2500, () => {
         if (this.scene.isActive()) this.scene.start("GameOver", gameOverData);
       });
+    } else if (this.net && !escaped) {
+      // Multiplayer death: briefly show the end card, then drop into spectator
+      // mode instead of freezing on a static frame until the round ends.
+      this.time.delayedCall(2200, () => {
+        if (this.scene.isActive()) this.enterSpectateMode();
+      });
     }
+  }
+
+  // ─── Spectator mode ──────────────────────────────────────────────────────────
+
+  /** Collects everyone still alive to spectate, sorted by mass descending. */
+  private getSpectateCandidates(): Array<{ id: string; name: string; x: number; y: number; mass: number }> {
+    const candidates: Array<{ id: string; name: string; x: number; y: number; mass: number }> = [];
+    if (this.net) {
+      for (const [, rp] of this.net.otherPlayers) {
+        if (rp.phase === "alive") {
+          candidates.push({ id: `p:${rp.id}`, name: rp.name, x: rp.x, y: rp.y, mass: rp.mass });
+        }
+      }
+    }
+    for (const bot of this.bots) {
+      if (bot.active) candidates.push({ id: `b:${bot.name}`, name: bot.name, x: bot.x, y: bot.y, mass: bot.mass });
+    }
+    candidates.sort((a, b) => b.mass - a.mass);
+    return candidates;
+  }
+
+  private enterSpectateMode() {
+    if (!this.net || this.spectating) return;
+    this.spectating = true;
+    this.endOverlayGfx?.destroy();
+    this.endOverlayGfx = null;
+    this.hud.hideEndResult();
+    const leader = this.getSpectateCandidates()[0];
+    this.spectateTargetId = leader?.id ?? null;
+    this.hud.showSpectateBanner(this.scale.width);
+  }
+
+  /** Bound to TAB/N — cycles the spectate camera to the next-highest-mass survivor. */
+  private cycleSpectateTarget() {
+    if (!this.spectating) return;
+    const candidates = this.getSpectateCandidates();
+    if (candidates.length === 0) return;
+    const idx = candidates.findIndex(c => c.id === this.spectateTargetId);
+    this.spectateTargetId = candidates[(idx + 1) % candidates.length].id;
+  }
+
+  private updateSpectateCamera() {
+    const candidates = this.getSpectateCandidates();
+    if (candidates.length === 0) {
+      this.hud.updateSpectateBanner("Waiting for the round to end…");
+      return;
+    }
+    let target = candidates.find(c => c.id === this.spectateTargetId);
+    if (!target) {
+      target = candidates[0];
+      this.spectateTargetId = target.id;
+    }
+    const targetZoom = Phaser.Math.Clamp(60 / massToRadius(target.mass), 0.15, 0.8);
+    const newZoom = Phaser.Math.Linear(this.cameras.main.zoom, targetZoom, 0.04);
+    this.cameras.main.setZoom(newZoom);
+    this.cameras.main.centerOn(target.x, target.y);
+    const rank = candidates.findIndex(c => c.id === target!.id) + 1;
+    this.hud.updateSpectateBanner(
+      `SPECTATING ${target.name}  •  ${Math.floor(target.mass)} VI  •  #${rank}/${candidates.length} alive   [TAB] next`
+    );
   }
 
   // ─── Rendering ─────────────────────────────────────────────────────────────

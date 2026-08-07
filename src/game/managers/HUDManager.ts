@@ -101,6 +101,8 @@ export class HUDManager {
   private minimapGfx!: Phaser.GameObjects.Graphics;
   private waitingGfx!: Phaser.GameObjects.Graphics;
   private waitingText!: Phaser.GameObjects.Text;
+  private spectateGfx!: Phaser.GameObjects.Graphics;
+  private spectateText!: Phaser.GameObjects.Text;
   private killFeedEntries: KillFeedEntry[] = [];
   private killFeedTexts: Phaser.GameObjects.Text[] = [];
   private milestoneTimer: number = 0;
@@ -181,6 +183,12 @@ export class HUDManager {
       .text(gw / 2, gh / 2, "", { fontSize: "28px", fontFamily: "monospace", color: "#00ff88", stroke: "#000000", strokeThickness: 4, align: "center" })
       .setScrollFactor(0).setDepth(26).setOrigin(0.5).setVisible(false);
 
+    // ── Spectate banner (shown after death, while round is still live) ─────
+    this.spectateGfx = this.scene.add.graphics().setScrollFactor(0).setDepth(24).setVisible(false);
+    this.spectateText = this.scene.add
+      .text(gw / 2, 16, "", { fontSize: "16px", fontFamily: "monospace", color: "#ff8844", stroke: "#000000", strokeThickness: 3, align: "center" })
+      .setScrollFactor(0).setDepth(24).setOrigin(0.5, 0).setVisible(false);
+
     // ── Kill feed (bottom-left, 5 pre-allocated slots) ─────────────────────
     this.killFeedEntries = [];
     this.killFeedTexts = [];
@@ -203,6 +211,7 @@ export class HUDManager {
       this.menuKeyText.setX(cx);
       this.milestoneText.setX(cx);
       this.leaderboardText.setX(gameSize.width - 14);
+      this.spectateText.setX(cx);
     });
   }
 
@@ -422,6 +431,33 @@ export class HUDManager {
     this.statsText.setText(statsLines.join("\n")).setColor(statsColor).setVisible(true);
     this.restartText.setText(restartLabel).setVisible(true);
     this.menuKeyText.setVisible(true);
+  }
+
+  /** Hides the full-screen end card so the world is visible again (used entering spectate mode). */
+  hideEndResult() {
+    this.endText.setVisible(false);
+    this.statsText.setVisible(false);
+    this.restartText.setVisible(false);
+    this.menuKeyText.setVisible(false);
+  }
+
+  // ── Spectator banner (after death, round still in progress) ────────────────
+
+  showSpectateBanner(gw: number) {
+    this.spectateGfx.clear();
+    this.spectateGfx.fillStyle(0x000000, 0.55);
+    this.spectateGfx.fillRect(0, 0, gw, 40);
+    this.spectateGfx.setVisible(true);
+    this.spectateText.setVisible(true);
+  }
+
+  updateSpectateBanner(text: string) {
+    this.spectateText.setText(text);
+  }
+
+  hideSpectateBanner() {
+    this.spectateGfx.setVisible(false);
+    this.spectateText.setVisible(false);
   }
 
   // ── Waiting overlay ────────────────────────────────────────────────────────
