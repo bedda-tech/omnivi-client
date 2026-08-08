@@ -22,6 +22,7 @@ import { InputManager, ActionResult } from "../managers/InputManager";
 import { HUDManager } from "../managers/HUDManager";
 import { BotManager } from "../managers/BotManager";
 import { RemotePlayerManager } from "../RemotePlayerManager";
+import { traceOrganicCircle } from "../utils/organicCircle";
 import type { GameOverData } from "./GameOver";
 import {
   DustParticle, Asteroid, QuadNode, Player, BotPlayer,
@@ -1625,14 +1626,19 @@ export class Main extends Phaser.Scene {
     this.gfx.fillCircle(x, y, gravRadius);
 
     // ── Player body — color shifts blue → yellow → red with mass ─────────
+    // "Magical circle" identity (CONSTRAINTS.md): undulating hand-drawn outline,
+    // not a flat geometric circle.
     const t = Math.min(1, mass / 5000);
     const hue = (1 - t) * 0.65;
     const playerColor = Phaser.Display.Color.HSLToColor(hue, 0.9, 0.6).color;
+    const tSec = this.time.now / 1000;
     this.gfx.fillStyle(playerColor, 1);
-    this.gfx.fillCircle(x, y, radius);
+    traceOrganicCircle(this.gfx, x, y, radius, tSec, this.player.shapeSeed);
+    this.gfx.fillPath();
 
     this.gfx.lineStyle(Math.max(1, radius * 0.04), 0xffffff, 0.7);
-    this.gfx.strokeCircle(x, y, radius);
+    traceOrganicCircle(this.gfx, x, y, radius, tSec, this.player.shapeSeed);
+    this.gfx.strokePath();
 
     // ── Direction indicator ──────────────────────────────────────────────
     const tipLen = radius + 12;
@@ -2068,13 +2074,16 @@ export class Main extends Phaser.Scene {
       this.gfx.fillStyle(bot.color, 0.07);
       this.gfx.fillCircle(bot.x, bot.y, r * 2.0);
 
-      // Body
+      // Body — undulating "magical circle" outline (CONSTRAINTS.md)
+      const botTSec = this.time.now / 1000;
       this.gfx.fillStyle(bot.color, 0.8);
-      this.gfx.fillCircle(bot.x, bot.y, r);
+      traceOrganicCircle(this.gfx, bot.x, bot.y, r, botTSec, bot.shapeSeed);
+      this.gfx.fillPath();
 
       // Outline
       this.gfx.lineStyle(Math.max(1, r * 0.04), 0xffffff, 0.4);
-      this.gfx.strokeCircle(bot.x, bot.y, r);
+      traceOrganicCircle(this.gfx, bot.x, bot.y, r, botTSec, bot.shapeSeed);
+      this.gfx.strokePath();
 
       // Direction indicator
       const cos = Math.cos(bot.rotation);

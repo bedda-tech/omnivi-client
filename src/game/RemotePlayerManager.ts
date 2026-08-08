@@ -1,13 +1,14 @@
 import Phaser from "phaser";
 import type { RemotePlayer } from "./NetworkManager";
 import { parseHslColor } from "./constants";
+import { traceOrganicCircle } from "./utils/organicCircle";
 
 const TICK_LAG   = 0.05;  // assume ~50ms from when server sampled to when we apply it
 const INTERP_SPD = 14;    // lerp rate — converges in ~1/14 s ≈ 70ms
 
 export class RemotePlayerManager {
   private nameLabels  = new Map<string, Phaser.GameObjects.Text>();
-  private remoteRender = new Map<string, { renderX: number; renderY: number }>();
+  private remoteRender = new Map<string, { renderX: number; renderY: number; shapeSeed: number }>();
 
   constructor(private scene: Phaser.Scene) {}
 
@@ -23,7 +24,7 @@ export class RemotePlayerManager {
       const deadX = rp.x + rp.vx * TICK_LAG;
       const deadY = rp.y + rp.vy * TICK_LAG;
       if (!this.remoteRender.has(id)) {
-        this.remoteRender.set(id, { renderX: deadX, renderY: deadY });
+        this.remoteRender.set(id, { renderX: deadX, renderY: deadY, shapeSeed: Math.random() * 1000 });
       }
       const rr = this.remoteRender.get(id)!;
       const a = Math.min(dt * INTERP_SPD, 1);
@@ -34,18 +35,21 @@ export class RemotePlayerManager {
 
       const r     = Math.sqrt(rp.mass) * 2;
       const color = parseHslColor(rp.color);
+      const tSec  = this.scene.time.now / 1000;
 
       // Subtle glow
       gfx.fillStyle(color, 0.08);
       gfx.fillCircle(rx, ry, r * 2.0);
 
-      // Body
+      // Body — undulating "magical circle" outline (CONSTRAINTS.md)
       gfx.fillStyle(color, 0.75);
-      gfx.fillCircle(rx, ry, r);
+      traceOrganicCircle(gfx, rx, ry, r, tSec, rr.shapeSeed);
+      gfx.fillPath();
 
       // Outline
       gfx.lineStyle(Math.max(1, r * 0.04), 0xffffff, 0.5);
-      gfx.strokeCircle(rx, ry, r);
+      traceOrganicCircle(gfx, rx, ry, r, tSec, rr.shapeSeed);
+      gfx.strokePath();
 
       // Thrust flash
       if (rp.isThrusting) {

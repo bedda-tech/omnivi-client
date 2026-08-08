@@ -11,6 +11,8 @@ export class Player {
   mass: number;
   rotation: number = 0; // radians; 0 = right
   thrustingThisFrame: boolean = false;
+  /** Per-player phase offset so the organic outline wobble doesn't sync across players. */
+  shapeSeed: number = Math.random() * 1000;
 
   constructor(x: number, y: number, mass: number) {
     this.x = x;

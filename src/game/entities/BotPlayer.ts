@@ -22,6 +22,8 @@ export class BotPlayer {
   boostThisFrame: boolean = false;
   /** Seconds until bot can boost again. */
   boostCooldown: number = 0;
+  /** Per-bot phase offset so the organic outline wobble doesn't sync across bots. */
+  shapeSeed: number = Math.random() * 1000;
 
   private wanderTarget: { x: number; y: number } | null = null;
   private wanderCooldown: number = 0;
