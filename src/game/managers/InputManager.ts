@@ -1,4 +1,5 @@
 import Phaser from "phaser";
+import { getTouchSettings, joystickSizeScale, type TouchSettings } from "../touchSettings";
 
 export interface MovementResult {
   dx: number;        // aim unit vector x (mouse/gamepad/touch); 0 for keyboard
@@ -62,6 +63,9 @@ export class InputManager {
   private useGamepad = false;
   readonly useTouch: boolean;
 
+  private readonly touchSettings: TouchSettings;
+  private readonly joyScale: number;
+
   // ── Virtual joystick (touch) ────────────────────────────────────────────
   private joyPointerId: number | null = null;
   private joyBaseX = 0;
@@ -101,6 +105,8 @@ export class InputManager {
 
     this.useTouch = FORCE_MOBILE || scene.sys.game.device.input.touch;
     this.pointer  = scene.input.activePointer;
+    this.touchSettings = getTouchSettings();
+    this.joyScale = joystickSizeScale(this.touchSettings.joystickSize);
 
     scene.input.on("pointermove", (p: Phaser.Input.Pointer) => {
       this.pointer     = p;
@@ -134,10 +140,11 @@ export class InputManager {
   // ── Touch control setup ──────────────────────────────────────────────────
 
   private layoutTouchControls(gw: number, gh: number) {
-    this.joyHintX = JOY_ANCHOR_X;
+    const swap = this.touchSettings.swapSides;
+    this.joyHintX = swap ? gw - JOY_ANCHOR_X : JOY_ANCHOR_X;
     this.joyHintY = gh - JOY_ANCHOR_Y_FROM_BOTTOM;
 
-    const anchorX = gw - BTN_ANCHOR_X_FROM_RIGHT;
+    const anchorX = swap ? BTN_ANCHOR_X_FROM_RIGHT : gw - BTN_ANCHOR_X_FROM_RIGHT;
     const anchorY = gh - BTN_ANCHOR_Y_FROM_BOTTOM;
     const half = BTN_GAP / 2;
     this.btnDefs = [
@@ -204,12 +211,12 @@ export class InputManager {
     const dx = p.x - this.joyBaseX;
     const dy = p.y - this.joyBaseY;
     const dist = Math.hypot(dx, dy);
-    const clamped = Math.min(dist, JOY_MAX_DRAG);
+    const clamped = Math.min(dist, JOY_MAX_DRAG * this.joyScale);
     const nx = dist > 0 ? dx / dist : 0;
     const ny = dist > 0 ? dy / dist : 0;
     this.joyThumbX = this.joyBaseX + nx * clamped;
     this.joyThumbY = this.joyBaseY + ny * clamped;
-    if (dist > JOY_DEADZONE) {
+    if (dist > JOY_DEADZONE * this.joyScale) {
       this.joyDx = nx;
       this.joyDy = ny;
       this.joyThrusting = true;
@@ -240,14 +247,14 @@ export class InputManager {
     // Joystick
     if (this.joyPointerId !== null) {
       g.lineStyle(3, 0x66ccff, 0.55);
-      g.strokeCircle(this.joyBaseX, this.joyBaseY, JOY_BASE_R);
+      g.strokeCircle(this.joyBaseX, this.joyBaseY, JOY_BASE_R * this.joyScale);
       g.fillStyle(0x66ccff, this.joyThrusting ? 0.65 : 0.4);
-      g.fillCircle(this.joyThumbX, this.joyThumbY, JOY_THUMB_R);
+      g.fillCircle(this.joyThumbX, this.joyThumbY, JOY_THUMB_R * this.joyScale);
     } else {
       g.lineStyle(2, 0xaaaaaa, 0.3);
-      g.strokeCircle(this.joyHintX, this.joyHintY, JOY_HINT_R);
+      g.strokeCircle(this.joyHintX, this.joyHintY, JOY_HINT_R * this.joyScale);
       g.fillStyle(0xaaaaaa, 0.15);
-      g.fillCircle(this.joyHintX, this.joyHintY, JOY_THUMB_R);
+      g.fillCircle(this.joyHintX, this.joyHintY, JOY_THUMB_R * this.joyScale);
     }
 
     // Action buttons

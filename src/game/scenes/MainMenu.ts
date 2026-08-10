@@ -1,6 +1,7 @@
 import { GameObjects, Scene } from "phaser";
 import { EventBus } from "../EventBus";
 import { TIER_INFO, getStoredTier, setStoredTier, getViBalance } from "../NetworkManager";
+import { getTouchSettings, cycleJoystickSize, toggleSwapSides } from "../touchSettings";
 
 // Mass IS VI — no dollar conversion
 
@@ -245,6 +246,37 @@ export class MainMenu extends Scene {
       })
       .setOrigin(0.5)
       .setDepth(10);
+
+    // ── Touch control settings (touch devices only) ──────────────────────────
+    if (this.sys.game.device.input.touch) {
+      const touchSettings = getTouchSettings();
+      const sizeLabel = (s: string) => `JOYSTICK SIZE: ${s.toUpperCase()}`;
+      const swapLabel = (b: boolean) => `SWAP SIDES: ${b ? "ON" : "OFF"}`;
+
+      const sizeBtn = this.add
+        .text(cx - 75, cy + 218, sizeLabel(touchSettings.joystickSize), {
+          fontFamily: "monospace",
+          fontSize: "11px",
+          color: "#556677",
+          align: "center",
+        })
+        .setOrigin(0.5)
+        .setDepth(10)
+        .setInteractive({ useHandCursor: true })
+        .on("pointerdown", () => sizeBtn.setText(sizeLabel(cycleJoystickSize())));
+
+      const swapBtn = this.add
+        .text(cx + 75, cy + 218, swapLabel(touchSettings.swapSides), {
+          fontFamily: "monospace",
+          fontSize: "11px",
+          color: "#556677",
+          align: "center",
+        })
+        .setOrigin(0.5)
+        .setDepth(10)
+        .setInteractive({ useHandCursor: true })
+        .on("pointerdown", () => swapBtn.setText(swapLabel(toggleSwapSides())));
+    }
 
     // Score removed — VI is the only metric that matters
 
