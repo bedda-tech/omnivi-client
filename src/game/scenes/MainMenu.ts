@@ -2,6 +2,7 @@ import { GameObjects, Scene } from "phaser";
 import { EventBus } from "../EventBus";
 import { TIER_INFO, getStoredTier, setStoredTier, getViBalance } from "../NetworkManager";
 import { getTouchSettings, cycleJoystickSize, toggleSwapSides } from "../touchSettings";
+import { getStreamerSettings, toggleStreamerMode, setTwitchHandle, maskedWalletLabel } from "../streamerSettings";
 
 // Mass IS VI — no dollar conversion
 
@@ -278,6 +279,28 @@ export class MainMenu extends Scene {
         .on("pointerdown", () => swapBtn.setText(swapLabel(toggleSwapSides())));
     }
 
+    // ── Streamer mode toggle (hides wallet, enlarges kill feed, adds Twitch badge) ─
+    const streamerRowY = this.sys.game.device.input.touch ? cy + 240 : cy + 218;
+    const streamerLabel = (s: boolean) => `STREAMER MODE: ${s ? "ON" : "OFF"}`;
+    const streamerBtn = this.add
+      .text(cx, streamerRowY, streamerLabel(getStreamerSettings().enabled), {
+        fontFamily: "monospace",
+        fontSize: "11px",
+        color: "#556677",
+        align: "center",
+      })
+      .setOrigin(0.5)
+      .setDepth(10)
+      .setInteractive({ useHandCursor: true })
+      .on("pointerdown", () => {
+        const enabled = toggleStreamerMode();
+        streamerBtn.setText(streamerLabel(enabled));
+        if (enabled) {
+          const handle = window.prompt("Twitch handle for the 'Now Playing' badge (optional, blank to skip):", getStreamerSettings().twitchHandle);
+          if (handle !== null) setTwitchHandle(handle);
+        }
+      });
+
     // Score removed — VI is the only metric that matters
 
     // ── Corner decoration: version ────────────────────────────────────────────
@@ -462,7 +485,8 @@ export class MainMenu extends Scene {
     entries.slice(0, 8).forEach((entry, i) => {
       const rowY = panelY + 23 + i * 18;
       const rankColor = i < 3 ? RANK_COLORS[i] : "#445566";
-      const displayName = (entry.name || entry.wallet).slice(0, 13);
+      const walletFallback = getStreamerSettings().enabled ? maskedWalletLabel() : entry.wallet;
+      const displayName = (entry.name || walletFallback).slice(0, 13);
       const massStr = Math.floor(entry.mass).toLocaleString();
 
       this.add.text(panelX + 7, rowY, `${i + 1}`, {

@@ -11,6 +11,7 @@ import {
   getViBalance,
 } from "../NetworkManager";
 import { connectWallet, approveAndStake } from "../blockchain/ClaimClient";
+import { getStreamerSettings } from "../streamerSettings";
 
 // Mass IS VI — no dollar conversion
 const ELO_KEY = "omnivi_elo";
@@ -203,7 +204,10 @@ export class Lobby extends Scene {
       connectWallet().then((addr) => {
         this.walletAddress = addr;
         if (addr) {
-          this.walletStatusText.setText(`CHAIN: ${addr.slice(0, 6)}…${addr.slice(-4)}`).setColor("#7755aa");
+          const label = getStreamerSettings().enabled
+            ? "CHAIN: connected (hidden)"
+            : `CHAIN: ${addr.slice(0, 6)}…${addr.slice(-4)}`;
+          this.walletStatusText.setText(label).setColor("#7755aa");
         } else {
           this.walletStatusText.setText("CHAIN: no MetaMask").setColor("#334455");
         }

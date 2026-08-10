@@ -8,6 +8,7 @@ import type { BotPlayer } from "../entities/BotPlayer";
 import type { NetworkManager } from "../NetworkManager";
 import { getOrCreatePlayerName } from "../NetworkManager";
 import type { GamePhase } from "../constants";
+import { getStreamerSettings } from "../streamerSettings";
 
 function parseHslColor(hsl: string): number {
   const m = hsl.match(/hsl\((\d+),\s*(\d+)%,\s*(\d+)%\)/);
@@ -106,10 +107,16 @@ export class HUDManager {
   private killFeedEntries: KillFeedEntry[] = [];
   private killFeedTexts: Phaser.GameObjects.Text[] = [];
   private milestoneTimer: number = 0;
+  private streamerMode: boolean = false;
+  private killFeedLineHeight: number = 20;
+  private streamerBadgeText!: Phaser.GameObjects.Text;
 
   constructor(private scene: Phaser.Scene) {}
 
   create(gw: number, gh: number) {
+    const streamerSettings = getStreamerSettings();
+    this.streamerMode = streamerSettings.enabled;
+
     // ── Background grid (world-space, static) ──────────────────────────────
     this.gridGfx = this.scene.add.graphics();
     const gridSize = 200;
@@ -189,15 +196,25 @@ export class HUDManager {
       .text(gw / 2, 16, "", { fontSize: "16px", fontFamily: "monospace", color: "#ff8844", stroke: "#000000", strokeThickness: 3, align: "center" })
       .setScrollFactor(0).setDepth(24).setOrigin(0.5, 0).setVisible(false);
 
-    // ── Kill feed (bottom-left, 5 pre-allocated slots) ─────────────────────
+    // ── Kill feed (bottom-left, 5 pre-allocated slots; enlarged in streamer mode) ──
+    this.killFeedLineHeight = this.streamerMode ? 30 : 20;
+    const killFeedFontSize = this.streamerMode ? "20px" : "13px";
     this.killFeedEntries = [];
     this.killFeedTexts = [];
     for (let i = 0; i < 5; i++) {
       this.killFeedTexts.push(
         this.scene.add
-          .text(16, 0, "", { fontSize: "13px", fontFamily: "monospace", color: "#00ff88", stroke: "#000000", strokeThickness: 2 })
+          .text(16, 0, "", { fontSize: killFeedFontSize, fontFamily: "monospace", color: "#00ff88", stroke: "#000000", strokeThickness: 2 })
           .setScrollFactor(0).setDepth(21).setVisible(false)
       );
+    }
+
+    // ── Streamer badge: "Now Playing: twitch.tv/<handle>" (bottom-center) ──
+    if (this.streamerMode && streamerSettings.twitchHandle) {
+      this.streamerBadgeText = this.scene.add
+        .text(gw / 2, gh - 12, `▶ Now Playing: twitch.tv/${streamerSettings.twitchHandle}`,
+          { fontSize: "14px", fontFamily: "monospace", color: "#9146ff", stroke: "#000000", strokeThickness: 3 })
+        .setScrollFactor(0).setDepth(23).setOrigin(0.5, 1);
     }
 
     // ── Resize: reposition center-anchored elements ────────────────────────
@@ -212,6 +229,9 @@ export class HUDManager {
       this.milestoneText.setX(cx);
       this.leaderboardText.setX(gameSize.width - 14);
       this.spectateText.setX(cx);
+      if (this.streamerBadgeText) {
+        this.streamerBadgeText.setX(cx).setY(gameSize.height - 12);
+      }
     });
   }
 
@@ -328,7 +348,7 @@ export class HUDManager {
       const g = (entry.color >>  8) & 0xff;
       const b =  entry.color        & 0xff;
       const hex = `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
-      txt.setText(entry.msg).setColor(hex).setAlpha(alpha).setY(baseY - i * 20).setVisible(true);
+      txt.setText(entry.msg).setColor(hex).setAlpha(alpha).setY(baseY - i * this.killFeedLineHeight).setVisible(true);
     }
   }
 
