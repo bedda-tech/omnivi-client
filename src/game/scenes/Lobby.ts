@@ -6,19 +6,13 @@ import {
   setStoredName,
   getStoredTier,
   setStoredTier,
+  getStoredElo,
   TIER_INFO,
   LobbyState,
   getViBalance,
 } from "../NetworkManager";
 import { connectWallet, approveAndStake } from "../blockchain/ClaimClient";
 import { getStreamerSettings } from "../streamerSettings";
-
-// Mass IS VI — no dollar conversion
-const ELO_KEY = "omnivi_elo";
-
-function getStoredElo(): number {
-  return parseInt(localStorage.getItem(ELO_KEY) ?? "1000", 10);
-}
 
 interface Star {
   x: number; y: number; r: number; speed: number;

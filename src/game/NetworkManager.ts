@@ -5,6 +5,7 @@ const ADJECTIVES = ["Stellar","Cosmic","Nebula","Solar","Void","Dark","Swift","S
 const NOUNS      = ["Drifter","Hunter","Nomad","Ranger","Pilot","Seeker","Wanderer","Scout","Voyager","Exile"];
 const NAME_KEY   = "omnivi_playername";
 const TIER_KEY   = "omnivi_tier";
+const ELO_KEY    = "omnivi_elo";
 
 export function getOrCreatePlayerName(): string {
   const stored = localStorage.getItem(NAME_KEY);
@@ -26,6 +27,16 @@ export function getStoredTier(): number {
 }
 export function setStoredTier(tier: number): void {
   localStorage.setItem(TIER_KEY, String(tier));
+}
+
+/** Persist ELO rating across sessions/rounds. Server is authoritative on updates
+ *  (see round_ended's `elo` field); this is just the client-side cache used to
+ *  seed the next join. Default = 1000 for new players. */
+export function getStoredElo(): number {
+  return parseInt(localStorage.getItem(ELO_KEY) ?? "1000", 10);
+}
+export function setStoredElo(elo: number): void {
+  localStorage.setItem(ELO_KEY, String(Math.round(elo)));
 }
 
 /** Human-readable tier labels and VI buy-in (mass = VI, no conversion) */
@@ -114,6 +125,7 @@ export interface RoundResult {
   phase:     string;
   tier:      number;
   buyInMass: number;
+  elo:       number;
 }
 
 export interface LobbyState {

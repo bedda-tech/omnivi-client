@@ -1,6 +1,6 @@
 import Phaser from "phaser";
 import { EventBus } from "../EventBus";
-import { NetworkManager, getOrCreatePlayerName, getStoredTier, TIER_INFO, deductBuyIn, creditPayout, getViBalance, ClaimReadyPayload } from "../NetworkManager";
+import { NetworkManager, getOrCreatePlayerName, getStoredTier, getStoredElo, setStoredElo, TIER_INFO, deductBuyIn, creditPayout, getViBalance, ClaimReadyPayload } from "../NetworkManager";
 import { connectWallet } from "../blockchain/ClaimClient";
 import {
   WORLD_SIZE, STARTING_MASS, MAX_SPEED, DUST_EMIT_MASS, INITIAL_DUST_COUNT, MAX_DUST, ABSORB_RATIO,
@@ -69,6 +69,8 @@ export class Main extends Phaser.Scene {
   private claimPayload: ClaimReadyPayload | null = null;
   /** Entry tier this session (0=Quick, 1=Standard, 2=HighRoller). */
   private playerTier: number = 1;
+  /** ELO sent to the server on join, for computing the delta shown on RoundResults. */
+  private joinElo: number = 1000;
   /** VI tokens staked this session (buy-in reference for loss-aversion HUD). */
   private buyInTokens: number = 1000;
   /** True when entered via ?mode=practice — skips wallet and VI deduction. */
@@ -295,7 +297,8 @@ export class Main extends Phaser.Scene {
     this.net.onPlayerRemoved((id) => {
       this.remoteManager.removePlayer(id);
     });
-    this.net.connect(getOrCreatePlayerName(), this.playerTier, 1000, this.practiceMode, stakeTxHash).catch((err: unknown) => {
+    this.joinElo = getStoredElo();
+    this.net.connect(getOrCreatePlayerName(), this.playerTier, this.joinElo, this.practiceMode, stakeTxHash).catch((err: unknown) => {
       if (this.practiceMode || this.playerTier === 0) {
         console.warn("[Net] Server unavailable — playing offline:", err);
         this.net = null;
@@ -378,6 +381,11 @@ export class Main extends Phaser.Scene {
 
     // When server signals round end, navigate to the polished RoundResults scene
     this.net?.onRoundEnded((results) => {
+      // Persist the server-authoritative ELO immediately so it survives even if the
+      // player closes the tab during the transition delay below.
+      const myResult = results.find(r => r.id === this.net?.mySessionId);
+      if (myResult && typeof myResult.elo === "number") setStoredElo(myResult.elo);
+
       // Delay so player can read their local end screen before transitioning
       const delay = (this.phase === 'escaped' || this.phase === 'consumed') ? 2500 : 500;
       this.time.delayedCall(delay, () => {
@@ -389,6 +397,7 @@ export class Main extends Phaser.Scene {
           timeSurvived: Math.floor(this.gameTimer),
           claimPayload: this.claimPayload ?? undefined,
           practiceMode: this.practiceMode,
+          startingElo: this.joinElo,
         });
       });
     });

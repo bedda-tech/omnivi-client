@@ -11,6 +11,8 @@ export interface RoundResultsData {
   timeSurvived: number;
   claimPayload?: ClaimReadyPayload;
   practiceMode?: boolean;
+  /** ELO the player joined this round with, used to compute the delta shown below. */
+  startingElo?: number;
 }
 
 // Mass IS VI — no conversion needed
@@ -147,16 +149,24 @@ export class RoundResults extends Scene {
       const secs    = survived % 60;
       const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
 
+      let eloSuffix = "";
+      if (typeof myResult.elo === "number") {
+        const prevElo  = data?.startingElo ?? myResult.elo;
+        const eloDelta = Math.round(myResult.elo) - Math.round(prevElo);
+        const sign     = eloDelta >= 0 ? "+" : "";
+        eloSuffix = `  ·  ELO: ${Math.round(myResult.elo)} (${sign}${eloDelta})`;
+      }
+
       let economyLine: string;
       if (escaped) {
         const sign = profitVI >= 0 ? "+" : "";
         economyLine =
           `Payout: ${netVI} VI  (${sign}${profitVI} VI)` +
-          `  ·  Time: ${timeStr}  ·  Rank: #${myRank}/${results.length}`;
+          `  ·  Time: ${timeStr}  ·  Rank: #${myRank}/${results.length}${eloSuffix}`;
       } else {
         economyLine =
           `Your vi returns to The Void  ·  Stake lost: -${buyIn} VI` +
-          `  ·  Time: ${timeStr}  ·  Rank: #${myRank}/${results.length}`;
+          `  ·  Time: ${timeStr}  ·  Rank: #${myRank}/${results.length}${eloSuffix}`;
       }
 
       const tierColor = myResult.tier >= 0 && myResult.tier < TIER_COLORS_S.length
