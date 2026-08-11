@@ -431,11 +431,12 @@ export class Main extends Phaser.Scene {
       this.tutorialTimer = 10.0;
       this.tutorialPanel = this.add.text(
         this.scale.width / 2, this.scale.height - 64,
-        "CONTROLS: W/Up/Mouse = thrust  |  Eat dust to grow  |  Avoid the BLACK HOLE  |  E near the edge = Escape\n[Press any key to dismiss]",
+        "You have manifested in the void. Movement burns vi — W/Up/Mouse to thrust. Absorb Cognitive Debris (dust) to grow your mass. If a rival is 1.5x your size, run. The Singularity is collapsing this sector — reach the edge and press E to escape before you dissolve.\n[Press any key to dismiss]",
         {
           fontSize: "14px", color: "#ffffff", stroke: "#000", strokeThickness: 3,
           fontFamily: "monospace", align: "center",
           backgroundColor: "#000000bb", padding: { x: 12, y: 8 },
+          wordWrap: { width: 860, useAdvancedWrap: true },
         }
       ).setScrollFactor(0).setDepth(240).setOrigin(0.5, 1);
 

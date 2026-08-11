@@ -128,7 +128,7 @@ export class RoundResults extends Scene {
       panelGfx.lineStyle(4, borderColor, 0.15);
       panelGfx.strokeRoundedRect(panelX - 3, panelY - 3, panelW + 6, panelH + 6, 10);
 
-      let outcomeLabel = escaped ? "ESCAPED!" : "CONSUMED BY THE VOID";
+      let outcomeLabel = escaped ? "ASCENDED!" : "DISSOLVED BY THE SINGULARITY";
       if (escaped && bonusMult > 1.0) outcomeLabel += `  ×${bonusMult} TOP-${myRank} BONUS`;
 
       this.outcomeText = this.add.text(cx, nextY + 8, outcomeLabel, {
@@ -155,7 +155,7 @@ export class RoundResults extends Scene {
           `  ·  Time: ${timeStr}  ·  Rank: #${myRank}/${results.length}`;
       } else {
         economyLine =
-          `Stake lost: -${buyIn} VI` +
+          `Your vi returns to The Void  ·  Stake lost: -${buyIn} VI` +
           `  ·  Time: ${timeStr}  ·  Rank: #${myRank}/${results.length}`;
       }
 
