@@ -1226,7 +1226,7 @@ export class Main extends Phaser.Scene {
       const touchDistSq = (pr + rr) * (pr + rr);
       if (dx * dx + dy * dy > touchDistSq) continue;
 
-      if (pm >= rp.mass * ABSORB_RATIO) {
+      if (pm >= rp.mass * ABSORB_RATIO && !rp.isSpawnProtected && !rp.isShielded) {
         // We absorb them: momentum conservation
         const tm = pm + rp.mass;
         this.player.vx = (this.player.vx * pm + rp.vx * rp.mass) / tm;

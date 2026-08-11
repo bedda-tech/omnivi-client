@@ -71,6 +71,8 @@ export interface RemotePlayer {
   tier: number;
   buyInMass: number;
   kills: number;
+  isSpawnProtected: boolean;
+  isShielded: boolean;
 }
 
 // ─── Server-authoritative game state ─────────────────────────────────────────
@@ -467,5 +469,7 @@ function mapPlayer(sessionId: string, p: any): RemotePlayer {
     tier:        p.tier        ?? 1,
     buyInMass:   p.buyInMass   ?? 1000,
     kills:       p.kills       ?? 0,
+    isSpawnProtected: p.isSpawnProtected ?? false,
+    isShielded:       p.isShielded       ?? false,
   };
 }
