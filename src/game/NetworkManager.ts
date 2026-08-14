@@ -117,6 +117,11 @@ export interface KillBountyPayload {
   bonusMass: number;
 }
 
+export interface BhConsumedPayload {
+  source?: "blackhole" | "bot";
+  name?: string; // bot's display name, when source === "bot"
+}
+
 export interface RoundResult {
   id:        string;
   name:      string;
@@ -159,8 +164,10 @@ export class NetworkManager {
   private _onKillBounty: ((payload: KillBountyPayload) => void) | null = null;
   /** Fires whenever the server broadcasts a new authoritative mass for the local player. */
   private _onSelfMassUpdate: ((mass: number) => void) | null = null;
-  /** Fires when server forcibly marks this player as BH-consumed (authoritative death). */
-  private _onBhConsumed: (() => void) | null = null;
+  /** Fires when server forcibly marks this player as consumed (authoritative death —
+   *  black hole race or an NPC bot kill, either of which the local client has no way
+   *  to detect on its own). */
+  private _onBhConsumed: ((payload: BhConsumedPayload) => void) | null = null;
   private _onRoundStarted: (() => void) | null = null;
   private _onRoundEnded: ((results: RoundResult[]) => void) | null = null;
   private _onLobbyState: ((state: LobbyState) => void) | null = null;
@@ -238,9 +245,9 @@ export class NetworkManager {
       this._onKillBounty?.(payload);
     });
 
-    room.onMessage("bh_consumed", () => {
-      console.log("[Net] Server BH consumed this player");
-      this._onBhConsumed?.();
+    room.onMessage("bh_consumed", (payload: BhConsumedPayload) => {
+      console.log("[Net] Server marked this player consumed:", payload);
+      this._onBhConsumed?.(payload ?? {});
     });
 
     room.onMessage("round_start", () => {
@@ -393,6 +400,11 @@ export class NetworkManager {
   /** Called when server confirms a kill bounty for this player. */
   onKillBounty(cb: (payload: KillBountyPayload) => void): void {
     this._onKillBounty = cb;
+  }
+
+  /** Called when the server authoritatively marks this player consumed (BH race or bot kill). */
+  onBhConsumed(cb: (payload: BhConsumedPayload) => void): void {
+    this._onBhConsumed = cb;
   }
 
   /**

@@ -364,6 +364,20 @@ export class Main extends Phaser.Scene {
       );
     });
 
+    // Server authoritatively marked us consumed — a bot kill (which our own client
+    // can't detect locally, unlike the black hole) or a black-hole race the server's
+    // own sweep noticed first. Idempotent against local self-detection: by the time
+    // this round-trips, `phase` is usually already 'consumed'/'escaped', so this is
+    // a no-op in that common case and only matters when the server was first to know.
+    this.net?.onBhConsumed((payload) => {
+      if (this.phase === 'escaped' || this.phase === 'consumed') return;
+      this.phase = 'consumed';
+      const message = payload.source === 'bot' && payload.name
+        ? `ABSORBED BY ${payload.name}`
+        : undefined;
+      this.showEndScreen(false, message);
+    });
+
     // Joined during 'ended' phase: freeze input and show countdown overlay
     this.net?.onLobbyState((state) => {
       if (state.phase === 'ended') {
