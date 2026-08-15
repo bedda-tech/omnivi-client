@@ -1,5 +1,5 @@
 import { Scene, GameObjects } from "phaser";
-import { RoundResult, TIER_INFO, ClaimReadyPayload } from "../NetworkManager";
+import { RoundResult, TIER_INFO, TESTNET_TIER, ClaimReadyPayload } from "../NetworkManager";
 import { connectWallet, submitClaim, submitRestake } from "../blockchain/ClaimClient";
 import { NET_AFTER_RAKE } from "../constants";
 
@@ -82,10 +82,12 @@ export class RoundResults extends Scene {
       twinkleSpeed: 0.5 + Math.random() * 1.2,
     }));
 
-    const results  = data?.results      ?? [];
-    const myId     = data?.mySessionId  ?? "";
-    const buyIn    = data?.buyInTokens  ?? TIER_INFO[data?.playerTier ?? 1].viCost;
-    const survived = data?.timeSurvived ?? 0;
+    const results       = data?.results      ?? [];
+    const myId          = data?.mySessionId  ?? "";
+    const buyIn         = data?.buyInTokens  ?? TIER_INFO[data?.playerTier ?? 1].viCost;
+    const survived      = data?.timeSurvived ?? 0;
+    const isTestnetTier = data?.playerTier === TESTNET_TIER;
+    const unit          = isTestnetTier ? "PTS" : "VI";
     const myIdx    = results.findIndex(r => r.id === myId);
     const myResult = myIdx >= 0 ? results[myIdx] : null;
     const myRank   = myIdx + 1;
@@ -100,6 +102,17 @@ export class RoundResults extends Scene {
       shadow: { offsetX: 0, offsetY: 0, color: "#00ccff", blur: 18, stroke: true, fill: true },
       align: "center",
     }).setOrigin(0.5).setDepth(10);
+
+    // ── Persistent testnet banner — never a one-time modal ────────────────────
+    if (isTestnetTier) {
+      this.add.text(cx, 4, "🧪  TESTNET ROUND — points only, no real $KRAIN", {
+        fontFamily: "monospace",
+        fontSize: "12px",
+        color: "#00160f",
+        backgroundColor: "#00ffcc",
+        padding: { x: 10, y: 3 },
+      }).setOrigin(0.5, 0).setDepth(12);
+    }
 
     this.add.graphics().setDepth(3).lineStyle(1, 0x1133aa, 0.30)
       .lineBetween(cx - 260, 58, cx + 260, 58);
@@ -158,7 +171,11 @@ export class RoundResults extends Scene {
       }
 
       let economyLine: string;
-      if (escaped) {
+      if (isTestnetTier) {
+        economyLine = escaped
+          ? `TESTNET win — bonus points credited  ·  Time: ${timeStr}  ·  Rank: #${myRank}/${results.length}${eloSuffix}`
+          : `TESTNET loss — staked points forfeited  ·  Time: ${timeStr}  ·  Rank: #${myRank}/${results.length}${eloSuffix}`;
+      } else if (escaped) {
         const sign = profitVI >= 0 ? "+" : "";
         economyLine =
           `Payout: ${netVI} VI  (${sign}${profitVI} VI)` +
@@ -208,7 +225,7 @@ export class RoundResults extends Scene {
     const headerStyle = { fontFamily: "monospace", fontSize: "11px", color: "#334d66" } as const;
     this.add.text(col.rank,   tableTop, "RANK",   headerStyle).setOrigin(0.5, 0).setDepth(10);
     this.add.text(col.name,   tableTop, "PILOT",  headerStyle).setOrigin(0, 0).setDepth(10);
-    this.add.text(col.mass,   tableTop, "VI",     headerStyle).setOrigin(0.5, 0).setDepth(10);
+    this.add.text(col.mass,   tableTop, unit,     headerStyle).setOrigin(0.5, 0).setDepth(10);
     this.add.text(col.kills,  tableTop, "KILLS",  headerStyle).setOrigin(0.5, 0).setDepth(10);
     this.add.text(col.tier,   tableTop, "TIER",   headerStyle).setOrigin(0.5, 0).setDepth(10);
     this.add.text(col.status, tableTop, "STATUS", headerStyle).setOrigin(0.5, 0).setDepth(10);

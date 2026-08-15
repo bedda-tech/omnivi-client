@@ -1,6 +1,6 @@
 import Phaser from "phaser";
 import { EventBus } from "../EventBus";
-import { NetworkManager, getOrCreatePlayerName, getStoredTier, getStoredElo, setStoredElo, TIER_INFO, deductBuyIn, creditPayout, getViBalance, ClaimReadyPayload } from "../NetworkManager";
+import { NetworkManager, getOrCreatePlayerName, getStoredTier, getStoredElo, setStoredElo, TIER_INFO, TESTNET_TIER, deductBuyIn, creditPayout, getViBalance, getOrCreateTestnetIdentity, ClaimReadyPayload } from "../NetworkManager";
 import { connectWallet } from "../blockchain/ClaimClient";
 import {
   WORLD_SIZE, STARTING_MASS, MAX_SPEED, DUST_EMIT_MASS, INITIAL_DUST_COUNT, MAX_DUST, ABSORB_RATIO,
@@ -298,7 +298,8 @@ export class Main extends Phaser.Scene {
       this.remoteManager.removePlayer(id);
     });
     this.joinElo = getStoredElo();
-    this.net.connect(getOrCreatePlayerName(), this.playerTier, this.joinElo, this.practiceMode, stakeTxHash).catch((err: unknown) => {
+    const joinWalletAddress = this.playerTier === TESTNET_TIER ? getOrCreateTestnetIdentity() : "";
+    this.net.connect(getOrCreatePlayerName(), this.playerTier, this.joinElo, this.practiceMode, stakeTxHash, joinWalletAddress).catch((err: unknown) => {
       if (this.practiceMode || this.playerTier === 0) {
         console.warn("[Net] Server unavailable — playing offline:", err);
         this.net = null;
@@ -934,6 +935,7 @@ export class Main extends Phaser.Scene {
         estimatedPayout,
         myRank,
         prizePool,
+        isTestnetTier: this.playerTier === TESTNET_TIER,
       });
     }
     this.hud.updatePhaseHUD({
@@ -1355,30 +1357,44 @@ export class Main extends Phaser.Scene {
     const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
     const rankStr = total > 1 ? `#${rank} / ${total}` : "";
 
-    // Economy: apply top-3 bonus and rake, then credit/debit VI balance
+    // Economy: apply top-3 bonus and rake, then credit/debit VI balance.
+    // Testnet tier never touches the real VI wallet — its stake/win/loss is already
+    // settled server-side against the testnet points ledger (see testnetPoints.ts).
+    const isTestnetTier = this.playerTier === TESTNET_TIER;
     const BONUS_TABLE = [1.50, 1.25, 1.10] as const;
     const bonusMult = escaped && rank >= 1 && rank <= 3 ? BONUS_TABLE[rank - 1] : 1.0;
     const finalVI   = Math.floor(this.player.mass);
     const netVI     = escaped ? Math.floor(finalVI * bonusMult * NET_AFTER_RAKE) : 0;
-    if (escaped) creditPayout(netVI);
+    if (escaped && !isTestnetTier) creditPayout(netVI);
     const newBalance = getViBalance();
     const deltaVI = escaped ? netVI - this.buyInTokens : -this.buyInTokens;
     const deltaSign = deltaVI >= 0 ? "+" : "";
 
     let escapedLine: string;
-    if (escaped) {
+    let walletLine: string;
+    if (isTestnetTier) {
+      const bonusStr = escaped && bonusMult > 1.0 ? `  ×${bonusMult} rank-bonus` : "";
+      escapedLine = escaped
+        ? `TESTNET win — bonus points credited${bonusStr}`
+        : "TESTNET loss — staked points forfeited";
+      walletLine = "No real $KRAIN or VI affected (testnet points only)";
+    } else if (escaped) {
       const bonusStr = bonusMult > 1.0 ? `  ×${bonusMult} rank-bonus` : "";
       escapedLine = `Payout: ${netVI} VI  (${deltaSign}${deltaVI})${bonusStr}`;
+      walletLine = `Wallet: ${newBalance.toLocaleString()} VI`;
     } else {
       escapedLine = `Stake lost: -${this.buyInTokens} VI`;
+      walletLine = `Wallet: ${newBalance.toLocaleString()} VI`;
     }
 
     this.hud.showEndResult({
       title,
       titleColor,
-      statsLines: [escapedLine, `Time: ${timeStr}   ${rankStr}`, `Wallet: ${newBalance.toLocaleString()} VI`],
-      statsColor: deltaVI >= 0 ? "#00ff88" : "#ff3333",
-      restartLabel: `[ R ]  Re-stake  ${TIER_INFO[this.playerTier].label} (${this.buyInTokens} VI)`,
+      statsLines: [escapedLine, `Time: ${timeStr}   ${rankStr}`, walletLine],
+      statsColor: isTestnetTier ? "#00ffcc" : deltaVI >= 0 ? "#00ff88" : "#ff3333",
+      restartLabel: isTestnetTier
+        ? `[ R ]  Re-stake  ${TIER_INFO[this.playerTier].label}`
+        : `[ R ]  Re-stake  ${TIER_INFO[this.playerTier].label} (${this.buyInTokens} VI)`,
     });
 
     this.input.keyboard!.once("keydown-R", () => {

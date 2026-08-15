@@ -8,8 +8,11 @@ import {
   setStoredTier,
   getStoredElo,
   TIER_INFO,
+  TESTNET_TIER,
   LobbyState,
   getViBalance,
+  getOrCreateTestnetIdentity,
+  fetchTestnetPoints,
 } from "../NetworkManager";
 import { connectWallet, approveAndStake } from "../blockchain/ClaimClient";
 import { getStreamerSettings } from "../streamerSettings";
@@ -32,6 +35,9 @@ export class Lobby extends Scene {
   private walletAddress: string = "";
   private walletStatusText!: GameObjects.Text;
   private practiceMode: boolean = false;
+  /** Testnet points balance, fetched lazily the first time the Free/Testnet tier is
+   *  selected. null = not yet fetched/loading. */
+  private testnetBalance: number | null = null;
 
   // Background layers
   private starGfx!: GameObjects.Graphics;
@@ -194,7 +200,7 @@ export class Lobby extends Scene {
       align: "center",
     }).setOrigin(0.5).setDepth(10);
 
-    if (!this.practiceMode) {
+    if (!this.practiceMode && this.selectedTier !== TESTNET_TIER) {
       connectWallet().then((addr) => {
         this.walletAddress = addr;
         if (addr) {
@@ -233,13 +239,14 @@ export class Lobby extends Scene {
     }).setOrigin(0.5).setDepth(10);
 
     this.tierGfx = this.add.graphics().setDepth(9);
-    const TIER_COLORS_S: string[] = ["#44aaff", "#00ff88", "#ffaa00"];
-    const tierSpacing = 138;
+    const TIER_COLORS_S: string[] = ["#44aaff", "#00ff88", "#ffaa00", "#00ffcc"];
+    const tierSpacing = 128;
     const tierY = cy - 32;
+    const tierCenterOffset = (TIER_INFO.length - 1) / 2;
 
     this.tierBtns = TIER_INFO.map((info, i) => {
-      const bx = cx + (i - 1) * tierSpacing;
-      const label = `${info.label}\n${info.viCost} VI`;
+      const bx = cx + (i - tierCenterOffset) * tierSpacing;
+      const label = (info as any).isTestnet ? `${info.label}\nTESTNET PTS` : `${info.label}\n${info.viCost} VI`;
       const btn = this.add.text(bx, tierY, label, {
         fontFamily: '"Arial Black", Gadget, sans-serif',
         fontSize: "12px",
@@ -384,7 +391,8 @@ export class Lobby extends Scene {
     });
 
     try {
-      await this.net.connect(name, this.selectedTier, elo, this.practiceMode);
+      const walletAddress = this.selectedTier === TESTNET_TIER ? getOrCreateTestnetIdentity() : "";
+      await this.net.connect(name, this.selectedTier, elo, this.practiceMode, "", walletAddress);
       this.statusText.setText("Waiting for players...");
     } catch (err) {
       console.error("[Lobby] Connect failed:", err);
@@ -401,7 +409,7 @@ export class Lobby extends Scene {
     // Attempt on-chain stake when contracts are configured and wallet is connected
     const vaultAddr: string = (import.meta as any).env?.VITE_GAME_VAULT_ADDRESS ?? "";
     let stakeTxHash = "";
-    if (!this.practiceMode && this.walletAddress && vaultAddr) {
+    if (!this.practiceMode && this.selectedTier !== TESTNET_TIER && this.walletAddress && vaultAddr) {
       this.statusText.setText("Step 1/2: Approving VI tokens... (check MetaMask)").setColor("#ffaa00");
       try {
         stakeTxHash = await approveAndStake(this.selectedTier, (step) => {
@@ -464,19 +472,20 @@ export class Lobby extends Scene {
 
     const { width: W } = this.cameras.main;
     const cx = W / 2;
-    const tierSpacing = 138;
+    const tierSpacing = 128;
     const tierY = this.cameras.main.height / 2 - 32;
-    const CARD_W = 120;
+    const CARD_W = 110;
     const CARD_H = 68;
-    const TIER_COLORS: number[] = [0x44aaff, 0x00ff88, 0xffaa00];
-    const TIER_COLORS_S: string[] = ["#44aaff", "#00ff88", "#ffaa00"];
+    const TIER_COLORS: number[] = [0x44aaff, 0x00ff88, 0xffaa00, 0x00ffcc];
+    const TIER_COLORS_S: string[] = ["#44aaff", "#00ff88", "#ffaa00", "#00ffcc"];
+    const tierCenterOffset = (TIER_INFO.length - 1) / 2;
 
     this.tierGfx.clear();
 
     const balance = getViBalance();
     this.tierBtns.forEach((btn, i) => {
-      const bx = cx + (i - 1) * tierSpacing;
-      const canAfford = balance >= TIER_INFO[i].viCost;
+      const bx = cx + (i - tierCenterOffset) * tierSpacing;
+      const canAfford = (TIER_INFO[i] as any).isTestnet ? true : balance >= TIER_INFO[i].viCost;
       if (i === index) {
         this.tierGfx.fillStyle(TIER_COLORS[i], canAfford ? 0.12 : 0.06);
         this.tierGfx.fillRoundedRect(bx - CARD_W / 2, tierY - CARD_H / 2, CARD_W, CARD_H, 8);
@@ -495,15 +504,23 @@ export class Lobby extends Scene {
     });
 
     const info = TIER_INFO[index];
-    const canAffordSelected = balance >= info.viCost;
-    const remaining = balance - info.viCost;
-    const minPayout = Math.floor(info.viCost * 0.95);
-    const descLine = canAffordSelected
-      ? `stake ${info.viCost.toLocaleString()} VI  ·  ${remaining.toLocaleString()} remaining  ·  top-3 earns x1.5\nMin payout if escaped: ~${minPayout.toLocaleString()} VI`
-      : `INSUFFICIENT VI  ·  need ${(info.viCost - balance).toLocaleString()} more\nMin payout if escaped: ~${minPayout.toLocaleString()} VI`;
-    this.tierDescText
-      .setText(descLine)
-      .setColor(canAffordSelected ? TIER_COLORS_S[index] : "#ff4444");
+    if ((info as any).isTestnet) {
+      const balanceStr = this.testnetBalance === null ? "loading..." : `${this.testnetBalance.toLocaleString()} PTS`;
+      this.tierDescText
+        .setText(`TESTNET — no real $KRAIN, no real payout  ·  balance: ${balanceStr}  ·  stake ${(info as any).pointsCost} PTS  ·  win = bonus points, lose = forfeit`)
+        .setColor(TIER_COLORS_S[index]);
+      if (this.testnetBalance === null) this.loadTestnetBalance();
+    } else {
+      const canAffordSelected = balance >= info.viCost;
+      const remaining = balance - info.viCost;
+      const minPayout = Math.floor(info.viCost * 0.95);
+      const descLine = canAffordSelected
+        ? `stake ${info.viCost.toLocaleString()} VI  ·  ${remaining.toLocaleString()} remaining  ·  top-3 earns x1.5\nMin payout if escaped: ~${minPayout.toLocaleString()} VI`
+        : `INSUFFICIENT VI  ·  need ${(info.viCost - balance).toLocaleString()} more\nMin payout if escaped: ~${minPayout.toLocaleString()} VI`;
+      this.tierDescText
+        .setText(descLine)
+        .setColor(canAffordSelected ? TIER_COLORS_S[index] : "#ff4444");
+    }
   }
 
   private editPlayerName(): void {
@@ -514,6 +531,16 @@ export class Lobby extends Scene {
     if (!trimmed) return;
     setStoredName(trimmed);
     this.nameText.setText(`PILOT: ${trimmed}  [edit]`);
+  }
+
+  private async loadTestnetBalance(): Promise<void> {
+    const serverBase = (import.meta as any).env?.VITE_SERVER_URL
+      ?.replace("ws://", "http://").replace("wss://", "https://")
+      ?? "http://localhost:8000";
+    const snapshot = await fetchTestnetPoints(serverBase);
+    if (!this.sys.isActive() || snapshot === null) return;
+    this.testnetBalance = snapshot.balance;
+    if (this.selectedTier === TESTNET_TIER) this.selectTier(TESTNET_TIER);
   }
 
   private async _fetchStats(): Promise<void> {

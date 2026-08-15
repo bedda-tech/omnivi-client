@@ -47,6 +47,9 @@ export interface MassHudState {
   estimatedPayout: number;
   myRank: number;
   prizePool: number;
+  /** Free/Testnet tier — no real $KRAIN/VI is at stake. Drives the persistent in-match
+   *  TESTNET badge and swaps the HUD's "VI" unit label to "PTS". */
+  isTestnetTier: boolean;
 }
 
 export interface PhaseHudState {
@@ -110,6 +113,7 @@ export class HUDManager {
   private streamerMode: boolean = false;
   private killFeedLineHeight: number = 20;
   private streamerBadgeText!: Phaser.GameObjects.Text;
+  private testnetBadgeText!: Phaser.GameObjects.Text;
 
   constructor(private scene: Phaser.Scene) {}
 
@@ -138,6 +142,15 @@ export class HUDManager {
     this.massText = this.scene.add
       .text(16, 16, "", { fontSize: "16px", color: "#ffffff", stroke: "#000000", strokeThickness: 3, lineSpacing: 4 })
       .setScrollFactor(0).setDepth(20);
+
+    // ── Testnet badge (top-center banner, persistent for the whole match —
+    //    never a one-time modal, per the Free/Testnet tier's trust requirement) ──
+    this.testnetBadgeText = this.scene.add
+      .text(gw / 2, 0, "🧪  TESTNET  ·  points only, no real $KRAIN", {
+        fontSize: "13px", fontFamily: "monospace", color: "#00160f",
+        backgroundColor: "#00ffcc", padding: { x: 10, y: 3 },
+      })
+      .setScrollFactor(0).setDepth(35).setOrigin(0.5, 0).setVisible(false);
 
     const isTouch = this.scene.sys.game.device.input.touch;
     const controlsHint = isTouch
@@ -229,6 +242,7 @@ export class HUDManager {
       this.milestoneText.setX(cx);
       this.leaderboardText.setX(gameSize.width - 14);
       this.spectateText.setX(cx);
+      this.testnetBadgeText.setX(cx);
       if (this.streamerBadgeText) {
         this.streamerBadgeText.setX(cx).setY(gameSize.height - 12);
       }
@@ -244,15 +258,18 @@ export class HUDManager {
 
   updateMassHUD(state: MassHudState) {
     const { playerMass, buyInTokens, tierLabel, spawnProtectTimer,
-      boostCooldown, ejectCooldown, shieldCooldown, brakeCooldown, estimatedPayout, myRank, prizePool } = state;
+      boostCooldown, ejectCooldown, shieldCooldown, brakeCooldown, estimatedPayout, myRank, prizePool,
+      isTestnetTier } = state;
+    this.testnetBadgeText.setVisible(isTestnetTier);
+    const unit = isTestnetTier ? "PTS" : "VI";
     const vi = Math.floor(playerMass);
     const deltaVI = vi - buyInTokens;
     const deltaStr = deltaVI >= 0 ? `+${deltaVI}` : `${deltaVI}`;
     const losing = deltaVI < 0;
     const hudLines = [
-      `${vi} VI  (${deltaStr})  [${tierLabel}  ${buyInTokens} VI]`,
-      `Payout: ~${estimatedPayout} VI   rank #${myRank}`,
-      `Pool:    ${prizePool} VI staked`,
+      `${vi} ${unit}  (${deltaStr})  [${tierLabel}  ${buyInTokens} ${unit}]`,
+      `Payout: ~${estimatedPayout} ${unit}   rank #${myRank}`,
+      `Pool:    ${prizePool} ${unit} staked`,
     ];
     if (spawnProtectTimer > 0) hudLines.push(`SPAWN SHIELD: ${spawnProtectTimer.toFixed(1)}s`);
     const cdBoost  = boostCooldown  > 0 ? `${boostCooldown.toFixed(1)}s`  : "READY";

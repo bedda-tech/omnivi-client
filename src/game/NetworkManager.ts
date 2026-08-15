@@ -20,13 +20,31 @@ export function setStoredName(name: string): void {
   localStorage.setItem(NAME_KEY, name);
 }
 
+/** Free/Testnet tier — testnet points staked 1:1, no real $KRAIN/VI/wallet involved.
+ *  Must match TESTNET_TIER in omnivi-server/src/rooms/gameRules.ts. */
+export const TESTNET_TIER = 3;
+
 /** Persist tier selection across sessions. Default = 1 (Standard). */
 export function getStoredTier(): number {
   const v = parseInt(localStorage.getItem(TIER_KEY) ?? "1", 10);
-  return [0, 1, 2].includes(v) ? v : 1;
+  return [0, 1, 2, TESTNET_TIER].includes(v) ? v : 1;
 }
 export function setStoredTier(tier: number): void {
   localStorage.setItem(TIER_KEY, String(tier));
+}
+
+// ─── Testnet identity (Free/Testnet tier only — never a real wallet) ────────────
+const TESTNET_ID_KEY = "omnivi_testnet_id";
+
+/** Stable per-device identity for the testnet points ledger. Not a wallet address —
+ *  generated locally so the Free/Testnet tier never requires MetaMask. */
+export function getOrCreateTestnetIdentity(): string {
+  let id = localStorage.getItem(TESTNET_ID_KEY);
+  if (!id) {
+    id = `testnet-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    localStorage.setItem(TESTNET_ID_KEY, id);
+  }
+  return id;
 }
 
 /** Persist ELO rating across sessions/rounds. Server is authoritative on updates
@@ -39,11 +57,14 @@ export function setStoredElo(elo: number): void {
   localStorage.setItem(ELO_KEY, String(Math.round(elo)));
 }
 
-/** Human-readable tier labels and VI buy-in (mass = VI, no conversion) */
+/** Human-readable tier labels and buy-in cost. Real tiers cost VI; the Free/Testnet tier
+ *  (index TESTNET_TIER) costs testnet points instead — `viCost` is 0 for it since it never
+ *  touches the VI balance, and `isTestnet`/`unit` distinguish its currency for display. */
 export const TIER_INFO = [
-  { label: "Quick",       viCost: 200 },
-  { label: "Standard",    viCost: 1000 },
-  { label: "High Roller", viCost: 4000 },
+  { label: "Quick",       viCost: 200,  unit: "VI" },
+  { label: "Standard",    viCost: 1000, unit: "VI" },
+  { label: "High Roller", viCost: 4000, unit: "VI" },
+  { label: "Free/Testnet", viCost: 0, unit: "PTS", isTestnet: true, pointsCost: 1000 },
 ] as const;
 
 // ─── VI Balance (simulated wallet) ───────────────────────────────────────────
@@ -66,6 +87,22 @@ export function creditPayout(amount: number): void {
   setViBalance(getViBalance() + Math.max(0, Math.round(amount)));
 }
 
+// ─── Testnet points balance (server-authoritative — fetched, not simulated) ────────
+/** Fetches the current testnet points balance for this device's testnet identity from
+ *  the server ledger. Non-throwing — returns null on any network failure so callers can
+ *  show a loading/offline state instead of a wrong number. */
+export async function fetchTestnetPoints(serverBase: string): Promise<{ balance: number } | null> {
+  try {
+    const identity = getOrCreateTestnetIdentity();
+    const res = await fetch(`${serverBase}/testnet-points?identity=${encodeURIComponent(identity)}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return typeof data.balance === "number" ? { balance: data.balance } : null;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Remote player snapshot (what the server tells us about other players) ───
 export interface RemotePlayer {
   id: string;
@@ -84,6 +121,7 @@ export interface RemotePlayer {
   kills: number;
   isSpawnProtected: boolean;
   isShielded: boolean;
+  isTestnetTier: boolean;
 }
 
 // ─── Server-authoritative game state ─────────────────────────────────────────
@@ -190,9 +228,17 @@ export class NetworkManager {
   }
 
   /** Join (or create) the shared "omnivi" room. Non-throwing — failures are logged. */
-  async connect(name: string = "Pilot", tier: number = 1, elo: number = 1000, practice: boolean = false, txHash: string = ""): Promise<void> {
+  async connect(
+    name: string = "Pilot",
+    tier: number = 1,
+    elo: number = 1000,
+    practice: boolean = false,
+    txHash: string = "",
+    walletAddress: string = "",
+  ): Promise<void> {
     this._intentionalLeave = false;
-    this.room = await this.client.joinOrCreate<any>("omnivi", { name, tier, elo, practice, txHash });
+    const testnet = tier === TESTNET_TIER;
+    this.room = await this.client.joinOrCreate<any>("omnivi", { name, tier, elo, practice, txHash, walletAddress, testnet });
     this._mySessionId = this.room.sessionId;
     this._reconnectionToken = (this.room as any).reconnectionToken ?? "";
     this._attachHandlers(this.room);
@@ -495,5 +541,6 @@ function mapPlayer(sessionId: string, p: any): RemotePlayer {
     kills:       p.kills       ?? 0,
     isSpawnProtected: p.isSpawnProtected ?? false,
     isShielded:       p.isShielded       ?? false,
+    isTestnetTier:    p.isTestnetTier    ?? false,
   };
 }
