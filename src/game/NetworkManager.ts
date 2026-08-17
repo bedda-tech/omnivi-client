@@ -122,6 +122,7 @@ export interface RemotePlayer {
   isSpawnProtected: boolean;
   isShielded: boolean;
   isTestnetTier: boolean;
+  isHunting: boolean;
 }
 
 // ─── Server-authoritative game state ─────────────────────────────────────────
@@ -542,5 +543,6 @@ function mapPlayer(sessionId: string, p: any): RemotePlayer {
     isSpawnProtected: p.isSpawnProtected ?? false,
     isShielded:       p.isShielded       ?? false,
     isTestnetTier:    p.isTestnetTier    ?? false,
+    isHunting:        p.isHunting        ?? false,
   };
 }

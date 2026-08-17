@@ -63,6 +63,15 @@ export class RemotePlayerManager {
         gfx.strokeCircle(rx, ry, r * 1.5);
       }
 
+      // Threat indicator — pulsing red ring while a bot is actively hunting a target,
+      // so players get a visible cue that this bot is more dangerous than an
+      // opportunistic one (see BotManager.ts BOT_HUNT_* ramp).
+      if (rp.isHunting) {
+        const pulse = 0.35 + 0.25 * Math.sin(tSec * 6);
+        gfx.lineStyle(2, 0xff2222, pulse);
+        gfx.strokeCircle(rx, ry, r * 1.35);
+      }
+
       // Name label above the player circle
       if (!this.nameLabels.has(id)) {
         const lbl = this.scene.add.text(0, 0, rp.name, {
