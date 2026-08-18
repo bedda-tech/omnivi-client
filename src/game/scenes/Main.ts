@@ -13,7 +13,7 @@ import {
   SHIELD_MASS_COST_PCT, SHIELD_DURATION, SHIELD_COOLDOWN,
   BRAKE_MASS_COST_PCT, BRAKE_COOLDOWN, BRAKE_VELOCITY_CUT, COMBO_TIMEOUT,
   COMBO_ANNOUNCE_THRESHOLDS, BOT_COUNT, BOT_NAMES,
-  BOT_COLORS, massToRadius, NET_AFTER_RAKE,
+  BOT_COLORS, massToRadius, NET_AFTER_RAKE, BOT_HUNT_START_S,
   type GamePhase,
 } from "../constants";
 import { SfxManager } from "../managers/SfxManager";
@@ -123,6 +123,7 @@ export class Main extends Phaser.Scene {
   private warningFlash: number = 0;             // seconds of warning screen flash
   private warningFlashColor: number = 0xff8800; // color of current warning flash
   private climaxWarningFired: boolean = false;  // one-shot: final 30s climax announcement
+  private stakesRisingFired: boolean = false;   // one-shot: bots start hunting (BOT_HUNT_START_S)
   private warnedAt = new Set<number>();          // WARN_SECONDS values already triggered
   private bhCameraShakeCooldown: number = 0;    // throttle camera shakes during shrink
 
@@ -249,6 +250,7 @@ export class Main extends Phaser.Scene {
     this.warnedAt = new Set();
     this.bhCameraShakeCooldown = 0;
     this.climaxWarningFired = false;
+    this.stakesRisingFired  = false;
     this.lastMassMilestone = STARTING_MASS;
     this.reconnectText = null;
     this.spawnLabelTimer = 5.0;
@@ -1936,6 +1938,16 @@ export class Main extends Phaser.Scene {
         const shakeIntensity = 0.003 + shrinkP * 0.013;            // 0.003 → 0.016
         this.cameras.main.shake(180, shakeIntensity);
         this.bhCameraShakeCooldown = shakeInterval;
+      }
+
+      // One-shot "stakes rising" cue when bots start hunting (mirrors server BOT_HUNT_START_S)
+      if (!this.stakesRisingFired && this.shrinkTimer >= BOT_HUNT_START_S) {
+        this.stakesRisingFired = true;
+        this.warningFlash      = 1.0;
+        this.warningFlashColor = 0xff9900;
+        this.spawnFloatText(this.player.x, this.player.y - this.player.radius * 2,
+          '⚠  STAKES RISING  ⚠', 0xffaa00);
+        this.sfx.warnCountdown(1);
       }
 
       // One-shot climax announcement when shrink has been running 60s

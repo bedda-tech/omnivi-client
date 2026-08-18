@@ -42,6 +42,7 @@ export const BH_GROWTH_RATE     = 200;   // mass/second added to BH (initial)
 export const BH_GROWTH_ACCEL    = 5.0;   // extra mass/s² — shrink accelerates over time
 export const BH_GRAVITY_MULT    = 5.0;   // BH gravity multiplier over GRAVITY_G
 export const WARN_SECONDS       = [60, 30, 10] as const; // countdown warnings before shrink
+export const BOT_HUNT_START_S   = 20;    // seconds into shrink when bots start hunting — must match server BotManager.ts BOT_HUNT_START_S default
 
 // ─── Escape Sequence ────────────────────────────────────────────────────────
 export const ESCAPE_DURATION      = 12;    // seconds to complete escape
