@@ -1271,17 +1271,17 @@ export class Main extends Phaser.Scene {
         this.cameras.main.shake(350, 0.015); // big shake for eating a player
         this.spawnBurst(rp.x, rp.y, 50, 220, 0xffdd00, 1.3);
         this.spawnFloatLabel(rp.x, rp.y, rp.mass, 0xffdd00);
-        const tag = rp.id.slice(0, 6).toUpperCase();
-        this.hud.pushKillFeed(`YOU absorbed ${tag}`, 0xffdd00);
+        const victimName = rp.name || rp.id.slice(0, 6).toUpperCase();
+        this.hud.pushKillFeed(`YOU absorbed ${victimName}`, 0xffdd00);
         if (this.killStreak >= 2) {
           this.hud.triggerMilestone(`KILL STREAK ×${this.killStreak}!`, 2.2);
         }
       } else if (rp.mass >= pm * ABSORB_RATIO && this.spawnProtectTimer <= 0 && this.shieldTimer <= 0) {
         // They absorb us: game over (blocked during spawn protection or active shield)
         this.phase = 'consumed';
-        const tag = rp.id.slice(0, 6).toUpperCase();
-        this.hud.pushKillFeed(`${tag} absorbed YOU`, 0xff5500);
-        this.showEndScreen(false, `ABSORBED BY ${tag}`);
+        const killerName = rp.name || rp.id.slice(0, 6).toUpperCase();
+        this.hud.pushKillFeed(`${killerName} absorbed YOU`, 0xff5500);
+        this.showEndScreen(false, `ABSORBED BY ${killerName}`);
         break;
       } else {
         // Similar size: elastic collision — bounce off each other
