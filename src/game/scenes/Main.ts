@@ -1693,6 +1693,46 @@ export class Main extends Phaser.Scene {
       x + cos * tipLen,
       y + sin * tipLen
     );
+
+    // ── Intended force vector — transparent line toward the reticle/aim ──
+    // (OMNIVI.md "Vector Lines": intended force, separate from momentum so
+    // players can see when thrust input and actual drift diverge.)
+    const forceLen = radius * 2.5 + 20;
+    this.gfx.lineStyle(Math.max(1, radius * 0.03), 0x88ddff, 0.3);
+    this.gfx.lineBetween(
+      x + cos * (radius + 4),
+      y + sin * (radius + 4),
+      x + cos * (radius + 4 + forceLen),
+      y + sin * (radius + 4 + forceLen)
+    );
+
+    // ── Velocity vector — solid line showing current momentum ────────────
+    // Diverges from the intended-force line under gravity/inertia — that gap
+    // IS the skill signal ("Star Engine" risk/reward, CONSTRAINTS.md).
+    const speed = Math.hypot(this.player.vx, this.player.vy);
+    if (speed > 8) {
+      const vAngle = Math.atan2(this.player.vy, this.player.vx);
+      const vcos = Math.cos(vAngle);
+      const vsin = Math.sin(vAngle);
+      const velLen = Math.min(radius * 3.5, radius + (speed / MAX_SPEED) * radius * 3);
+      this.gfx.lineStyle(Math.max(1.5, radius * 0.05), 0xffee00, 0.75);
+      this.gfx.lineBetween(x, y, x + vcos * velLen, y + vsin * velLen);
+      // Arrowhead so velocity direction is legible at a glance.
+      const headLen = Math.max(4, radius * 0.18);
+      const headAngle = 0.5;
+      this.gfx.lineBetween(
+        x + vcos * velLen,
+        y + vsin * velLen,
+        x + vcos * velLen - Math.cos(vAngle - headAngle) * headLen,
+        y + vsin * velLen - Math.sin(vAngle - headAngle) * headLen
+      );
+      this.gfx.lineBetween(
+        x + vcos * velLen,
+        y + vsin * velLen,
+        x + vcos * velLen - Math.cos(vAngle + headAngle) * headLen,
+        y + vsin * velLen - Math.sin(vAngle + headAngle) * headLen
+      );
+    }
   }
 
   /** Animated black hole at world center. */
