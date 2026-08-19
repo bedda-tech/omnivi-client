@@ -125,6 +125,16 @@ export interface RemotePlayer {
   isHunting: boolean;
 }
 
+// ─── Gravity well (server-authoritative, synced so all clients pull consistently) ──
+export interface GravityWell {
+  id: string;
+  ownerId: string;
+  x: number;
+  y: number;
+  strength: number;
+  expiresAt: number;
+}
+
 // ─── Server-authoritative game state ─────────────────────────────────────────
 export interface ServerGameState {
   phase: string;
@@ -188,6 +198,7 @@ export class NetworkManager {
   private _reconnectionToken: string = "";
   private _intentionalLeave = false;
   private _players = new Map<string, RemotePlayer>();
+  private _gravityWells = new Map<string, GravityWell>();
   private _gameState: ServerGameState = {
     phase: "playing",
     shrinkTimer: 90,
@@ -280,6 +291,15 @@ export class NetworkManager {
     });
     room.state.dust.onRemove((_d: any, id: string) => {
       this._onServerDustRemoved?.(id);
+    });
+
+    // Sync server-authoritative gravity wells (Gravity Well ability) — static once
+    // cast, so onAdd is all we need beyond eventual onRemove at expiry.
+    room.state.gravityWells.onAdd((w: any, id: string) => {
+      this._gravityWells.set(id, { id, ownerId: w.ownerId, x: w.x, y: w.y, strength: w.strength, expiresAt: w.expiresAt });
+    });
+    room.state.gravityWells.onRemove((_w: any, id: string) => {
+      this._gravityWells.delete(id);
     });
 
     room.onMessage("claim_ready", (payload: ClaimReadyPayload) => {
@@ -401,7 +421,7 @@ export class NetworkManager {
    * Notify server that we activated an ability so it can deduct mass server-side.
    * Server recomputes the actual cost from its own mass value.
    */
-  sendUseAbility(type: "boost" | "shield" | "eject" | "brake"): void {
+  sendUseAbility(type: "boost" | "shield" | "eject" | "brake" | "gravity_well"): void {
     this.room?.send("use_ability", { type });
   }
 
@@ -511,6 +531,7 @@ export class NetworkManager {
 
   get mySessionId(): string { return this._mySessionId; }
   get otherPlayers(): Map<string, RemotePlayer> { return this._players; }
+  get gravityWells(): Map<string, GravityWell> { return this._gravityWells; }
   get gameState(): ServerGameState { return this._gameState; }
   get connected(): boolean { return this.room !== null; }
   /** Last server-authoritative mass for the local player. 0 if not yet received. */
@@ -521,6 +542,7 @@ export class NetworkManager {
     this.room?.leave();
     this.room = null;
     this._players.clear();
+    this._gravityWells.clear();
   }
 }
 

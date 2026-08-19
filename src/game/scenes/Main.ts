@@ -12,6 +12,7 @@ import {
   EJECT_MASS_MIN, EJECT_MASS_MAX, EJECT_SPEED, EJECT_COOLDOWN, CLUTCH_MASS_THRESH,
   SHIELD_MASS_COST_PCT, SHIELD_DURATION, SHIELD_COOLDOWN,
   BRAKE_MASS_COST_PCT, BRAKE_COOLDOWN, BRAKE_VELOCITY_CUT, COMBO_TIMEOUT,
+  GRAVITY_WELL_MASS_COST_PCT, GRAVITY_WELL_MIN_MASS, GRAVITY_WELL_COOLDOWN,
   COMBO_ANNOUNCE_THRESHOLDS, BOT_COUNT, BOT_NAMES,
   BOT_COLORS, massToRadius, NET_AFTER_RAKE, BOT_HUNT_START_S,
   type GamePhase,
@@ -99,6 +100,7 @@ export class Main extends Phaser.Scene {
   shieldTimer: number = 0;    // seconds of shield remaining (0 = off)
   private shieldCooldown: number = 0; // seconds until shield is usable again
   private brakeCooldown: number = 0;  // seconds until brake dodge is ready
+  private gravityWellCooldown: number = 0; // seconds until gravity well is ready
 
   private slingshotCooldown: number = 0; // prevents spam gravity-assist label
 
@@ -241,6 +243,7 @@ export class Main extends Phaser.Scene {
     this.shieldTimer = 0;
     this.shieldCooldown = 0;
     this.brakeCooldown = 0;
+    this.gravityWellCooldown = 0;
     this.slingshotCooldown = 0;
     this.absorbCombo = 0;
     this.absorbComboTimer = 0;
@@ -722,6 +725,51 @@ export class Main extends Phaser.Scene {
           bb.vy -= ba.mass * f * dy * dt;
         }
       }
+
+      // ── Gravity Well ability pull (server-synced, so every client applies the
+      // same wells for eventual consistency) — pulls player, dust, and asteroids.
+      // Remote players/bots are excluded: their positions are owned by their own
+      // client/server simulation, not something we can push from here.
+      if (this.net && this.net.gravityWells.size > 0) {
+        for (const [, well] of this.net.gravityWells) {
+          {
+            const dx = well.x - px;
+            const dy = well.y - py;
+            const dSq = Math.max(dx * dx + dy * dy, GRAVITY_MIN_DIST_SQ);
+            const dist = Math.sqrt(dSq);
+            let wax = GRAVITY_G * well.strength * dx / (dSq * dist);
+            let way = GRAVITY_G * well.strength * dy / (dSq * dist);
+            const wmag = Math.hypot(wax, way);
+            if (wmag > MAX_G_ACCEL) { wax = wax / wmag * MAX_G_ACCEL; way = way / wmag * MAX_G_ACCEL; }
+            this.player.vx += wax * dt;
+            this.player.vy += way * dt;
+          }
+          for (const d of this.dust) {
+            const dx = well.x - d.x;
+            const dy = well.y - d.y;
+            const dSq = Math.max(dx * dx + dy * dy, GRAVITY_MIN_DIST_SQ);
+            const dist = Math.sqrt(dSq);
+            let wax = GRAVITY_G * well.strength * dx / (dSq * dist);
+            let way = GRAVITY_G * well.strength * dy / (dSq * dist);
+            const wmag = Math.hypot(wax, way);
+            if (wmag > MAX_G_ACCEL) { wax = wax / wmag * MAX_G_ACCEL; way = way / wmag * MAX_G_ACCEL; }
+            d.vx += wax * dt;
+            d.vy += way * dt;
+          }
+          for (const a of this.asteroids) {
+            const dx = well.x - a.x;
+            const dy = well.y - a.y;
+            const dSq = Math.max(dx * dx + dy * dy, GRAVITY_MIN_DIST_SQ);
+            const dist = Math.sqrt(dSq);
+            let wax = GRAVITY_G * well.strength * dx / (dSq * dist);
+            let way = GRAVITY_G * well.strength * dy / (dSq * dist);
+            const wmag = Math.hypot(wax, way);
+            if (wmag > MAX_G_ACCEL) { wax = wax / wmag * MAX_G_ACCEL; way = way / wmag * MAX_G_ACCEL; }
+            a.vx += wax * dt;
+            a.vy += way * dt;
+          }
+        }
+      }
     }
 
     // ── Update positions ───────────────────────────────────────────────
@@ -934,6 +982,7 @@ export class Main extends Phaser.Scene {
         ejectCooldown: this.ejectCooldown,
         shieldCooldown: this.shieldCooldown,
         brakeCooldown: this.brakeCooldown,
+        gravityWellCooldown: this.gravityWellCooldown,
         estimatedPayout,
         myRank,
         prizePool,
@@ -1093,9 +1142,10 @@ export class Main extends Phaser.Scene {
     this.slingshotCooldown = Math.max(0, this.slingshotCooldown - dt);
     // Enable skill abilities
 
-    this.boostCooldown    = Math.max(0, this.boostCooldown - dt);
-    this.ejectCooldown    = Math.max(0, this.ejectCooldown - dt);
-    this.brakeCooldown    = Math.max(0, this.brakeCooldown - dt);
+    this.boostCooldown       = Math.max(0, this.boostCooldown - dt);
+    this.ejectCooldown       = Math.max(0, this.ejectCooldown - dt);
+    this.brakeCooldown       = Math.max(0, this.brakeCooldown - dt);
+    this.gravityWellCooldown = Math.max(0, this.gravityWellCooldown - dt);
 
     // Tick down shield and cooldown
     if (this.shieldTimer > 0) {
@@ -1190,6 +1240,21 @@ export class Main extends Phaser.Scene {
         this.sfx.brake();
         this.spawnBurst(this.player.x, this.player.y, 14, 60, 0xffffff, 0.6);
         this.cameras.main.shake(80, 0.005);
+      }
+    }
+
+    // GRAVITY WELL — G key: spend 12% mass to drop an attraction point that pulls
+    // dust/asteroids/players toward it for a few seconds. Server-authoritative
+    // (synced via net.gravityWells) so every client applies the same pull.
+    if (actions.gravityWell) {
+      if (this.gravityWellCooldown <= 0 && this.player.mass > GRAVITY_WELL_MIN_MASS) {
+        const massCost = Math.max(20, this.player.mass * GRAVITY_WELL_MASS_COST_PCT);
+        this.player.mass = Math.max(15, this.player.mass - massCost);
+        this.net?.sendUseAbility("gravity_well");
+        this.gravityWellCooldown = GRAVITY_WELL_COOLDOWN;
+        this.sfx.shield(); // reuse — distinct cast chime not yet authored
+        this.spawnBurst(this.player.x, this.player.y, 24, 100, 0x8844ff, 0.75);
+        this.cameras.main.shake(100, 0.006);
       }
     }
   }
@@ -1522,6 +1587,9 @@ export class Main extends Phaser.Scene {
     // ── Draw bot players ─────────────────────────────────────────────────
     this.drawBots();
 
+    // ── Draw active gravity wells (Gravity Well ability) ────────────────
+    if (this.net) this.drawGravityWells();
+
     // ── Draw dust — color shifts from blue (tiny) to orange (medium) ────
     for (const d of this.dust) {
       const r = Math.max(1.5, d.radius);
@@ -1584,6 +1652,12 @@ export class Main extends Phaser.Scene {
       // Black hole during shrink
       if (this.phase === 'shrinking') {
         bodies.push({ bx: WORLD_SIZE / 2, by: WORLD_SIZE / 2, bm: this.bhMass });
+      }
+      // Active gravity wells
+      if (this.net) {
+        for (const [, well] of this.net.gravityWells) {
+          bodies.push({ bx: well.x, by: well.y, bm: well.strength });
+        }
       }
 
       for (const b of bodies) {
@@ -1776,6 +1850,38 @@ export class Main extends Phaser.Scene {
     // Thin bright rim at event horizon edge
     this.gfx.lineStyle(Math.max(1.5, bhR * 0.03), 0xffcc44, 0.7);
     this.gfx.strokeCircle(bx, by, bhR);
+  }
+
+  /** Swirling purple accretion ring for each active Gravity Well ability cast. */
+  private drawGravityWells() {
+    if (!this.net) return;
+    const t = this.time.now / 1000;
+    const now = Date.now();
+    for (const [, well] of this.net.gravityWells) {
+      const remaining = Math.max(0, (well.expiresAt - now) / 1000);
+      const fade = Math.min(1, remaining / 0.8); // fade out in the final 0.8s
+      const pulse = 0.5 + 0.5 * Math.sin(t * 8);
+      const coreR = 10 + pulse * 4;
+
+      // Swirling particles orbiting the core
+      const numSpots = 6;
+      for (let i = 0; i < numSpots; i++) {
+        const angle = (i / numSpots) * Math.PI * 2 - t * 3.5;
+        const arcR = coreR * (2.2 + 0.4 * Math.sin(i * 1.3 + t * 2));
+        const sx = well.x + Math.cos(angle) * arcR;
+        const sy = well.y + Math.sin(angle) * arcR;
+        this.gfx.fillStyle(0xaa66ff, fade * 0.6);
+        this.gfx.fillCircle(sx, sy, 3);
+      }
+
+      // Pull-radius ring
+      this.gfx.lineStyle(2, 0x8844ff, fade * (0.35 + pulse * 0.25));
+      this.gfx.strokeCircle(well.x, well.y, coreR * 3);
+
+      // Bright core
+      this.gfx.fillStyle(0xcc99ff, fade * 0.85);
+      this.gfx.fillCircle(well.x, well.y, coreR);
+    }
   }
 
   /** Pulsing escape aura drawn around the player. */

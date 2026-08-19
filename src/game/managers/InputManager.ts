@@ -14,9 +14,10 @@ export interface ActionResult {
   shield: boolean;  // F JustDown / SHIELD button tap
   escape: boolean;  // E JustDown / ESC button tap
   brake: boolean;   // Space JustDown / BRK button tap
+  gravityWell: boolean; // G JustDown / GRAV button tap
 }
 
-type ActionKey = "boost" | "eject" | "shield" | "escape" | "brake";
+type ActionKey = "boost" | "eject" | "shield" | "escape" | "brake" | "gravityWell";
 
 interface TouchButtonDef {
   key: ActionKey;
@@ -54,6 +55,7 @@ export class InputManager {
   private keyQ: Phaser.Input.Keyboard.Key;
   private keyF: Phaser.Input.Keyboard.Key;
   private keySpace: Phaser.Input.Keyboard.Key;
+  private keyG: Phaser.Input.Keyboard.Key;
 
   private pointer: Phaser.Input.Pointer;
   private mouseDown = false;
@@ -81,10 +83,10 @@ export class InputManager {
   // ── On-screen action buttons (touch) ────────────────────────────────────
   private btnDefs: TouchButtonDef[] = [];
   private btnPointerIds: Record<ActionKey, number | null> = {
-    boost: null, eject: null, shield: null, escape: null, brake: null,
+    boost: null, eject: null, shield: null, escape: null, brake: null, gravityWell: null,
   };
   private btnPending: Record<ActionKey, boolean> = {
-    boost: false, eject: false, shield: false, escape: false, brake: false,
+    boost: false, eject: false, shield: false, escape: false, brake: false, gravityWell: false,
   };
 
   private touchGfx: Phaser.GameObjects.Graphics | null = null;
@@ -102,6 +104,7 @@ export class InputManager {
     this.keyQ     = kb.addKey(Phaser.Input.Keyboard.KeyCodes.Q);
     this.keyF     = kb.addKey(Phaser.Input.Keyboard.KeyCodes.F);
     this.keySpace = kb.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+    this.keyG     = kb.addKey(Phaser.Input.Keyboard.KeyCodes.G);
 
     this.useTouch = FORCE_MOBILE || scene.sys.game.device.input.touch;
     this.pointer  = scene.input.activePointer;
@@ -148,11 +151,12 @@ export class InputManager {
     const anchorY = gh - BTN_ANCHOR_Y_FROM_BOTTOM;
     const half = BTN_GAP / 2;
     this.btnDefs = [
-      { key: "shield", label: "SHLD", x: anchorX - half, y: anchorY - half },
-      { key: "boost",  label: "BST",  x: anchorX + half, y: anchorY - half },
-      { key: "eject",  label: "EJT",  x: anchorX - half, y: anchorY + half },
-      { key: "escape", label: "ESC",  x: anchorX + half, y: anchorY + half },
-      { key: "brake",  label: "BRK",  x: anchorX,         y: anchorY - half - BTN_GAP },
+      { key: "shield",      label: "SHLD", x: anchorX - half,            y: anchorY - half },
+      { key: "boost",       label: "BST",  x: anchorX + half,            y: anchorY - half },
+      { key: "eject",       label: "EJT",  x: anchorX - half,            y: anchorY + half },
+      { key: "escape",      label: "ESC",  x: anchorX + half,            y: anchorY + half },
+      { key: "brake",       label: "BRK",  x: anchorX,                   y: anchorY - half - BTN_GAP },
+      { key: "gravityWell", label: "GRAV", x: anchorX - half - BTN_GAP,  y: anchorY - half },
     ];
   }
 
@@ -318,19 +322,21 @@ export class InputManager {
   }
 
   getActions(): ActionResult {
-    const boost  = Phaser.Input.Keyboard.JustDown(this.keyShift);
-    const eject  = Phaser.Input.Keyboard.JustDown(this.keyQ);
-    const shield = Phaser.Input.Keyboard.JustDown(this.keyF);
-    const escape = Phaser.Input.Keyboard.JustDown(this.keyE);
-    const brake  = Phaser.Input.Keyboard.JustDown(this.keySpace);
+    const boost       = Phaser.Input.Keyboard.JustDown(this.keyShift);
+    const eject       = Phaser.Input.Keyboard.JustDown(this.keyQ);
+    const shield      = Phaser.Input.Keyboard.JustDown(this.keyF);
+    const escape      = Phaser.Input.Keyboard.JustDown(this.keyE);
+    const brake       = Phaser.Input.Keyboard.JustDown(this.keySpace);
+    const gravityWell = Phaser.Input.Keyboard.JustDown(this.keyG);
 
-    if (!this.useTouch) return { boost, eject, shield, escape, brake };
+    if (!this.useTouch) return { boost, eject, shield, escape, brake, gravityWell };
     return {
-      boost:  boost  || this.consumeButton("boost"),
-      eject:  eject  || this.consumeButton("eject"),
-      shield: shield || this.consumeButton("shield"),
-      escape: escape || this.consumeButton("escape"),
-      brake:  brake  || this.consumeButton("brake"),
+      boost:       boost       || this.consumeButton("boost"),
+      eject:       eject       || this.consumeButton("eject"),
+      shield:      shield      || this.consumeButton("shield"),
+      escape:      escape      || this.consumeButton("escape"),
+      brake:       brake       || this.consumeButton("brake"),
+      gravityWell: gravityWell || this.consumeButton("gravityWell"),
     };
   }
 }

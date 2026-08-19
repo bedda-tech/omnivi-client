@@ -74,6 +74,10 @@ export const SHIELD_COOLDOWN      = 8.0;   // seconds between shield uses
 export const BRAKE_MASS_COST_PCT  = 0.04;  // 4% of mass spent per brake dodge
 export const BRAKE_COOLDOWN       = 3.0;   // seconds between brake dodges
 export const BRAKE_VELOCITY_CUT   = 0.85;  // fraction of current velocity canceled on brake
+export const GRAVITY_WELL_MASS_COST_PCT = 0.12;  // 12% of mass spent per gravity well cast — mirror server
+export const GRAVITY_WELL_MIN_MASS      = 100;   // minimum mass required to cast
+export const GRAVITY_WELL_COOLDOWN      = 15.0;  // seconds between casts — mirror server
+export const GRAVITY_WELL_DURATION      = 5.0;   // seconds the well persists — mirror server
 export const COMBO_TIMEOUT       = 2.5;    // seconds of inactivity before combo resets
 export const COMBO_ANNOUNCE_THRESHOLDS = [5, 10, 20, 50] as const;
 
