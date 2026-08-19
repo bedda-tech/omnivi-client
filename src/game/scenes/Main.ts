@@ -13,6 +13,7 @@ import {
   SHIELD_MASS_COST_PCT, SHIELD_DURATION, SHIELD_COOLDOWN,
   BRAKE_MASS_COST_PCT, BRAKE_COOLDOWN, BRAKE_VELOCITY_CUT, COMBO_TIMEOUT,
   GRAVITY_WELL_MASS_COST_PCT, GRAVITY_WELL_MIN_MASS, GRAVITY_WELL_COOLDOWN,
+  FRAGMENT_MASS_COST_PCT, FRAGMENT_MIN_MASS, FRAGMENT_COOLDOWN, FRAGMENT_DURATION,
   COMBO_ANNOUNCE_THRESHOLDS, BOT_COUNT, BOT_NAMES,
   BOT_COLORS, massToRadius, NET_AFTER_RAKE, BOT_HUNT_START_S,
   type GamePhase,
@@ -101,6 +102,8 @@ export class Main extends Phaser.Scene {
   private shieldCooldown: number = 0; // seconds until shield is usable again
   private brakeCooldown: number = 0;  // seconds until brake dodge is ready
   private gravityWellCooldown: number = 0; // seconds until gravity well is ready
+  fragmentTimer: number = 0;    // seconds of fragment-bomb absorption immunity remaining (0 = off)
+  private fragmentBombCooldown: number = 0; // seconds until fragment bomb is ready
 
   private slingshotCooldown: number = 0; // prevents spam gravity-assist label
 
@@ -244,6 +247,8 @@ export class Main extends Phaser.Scene {
     this.shieldCooldown = 0;
     this.brakeCooldown = 0;
     this.gravityWellCooldown = 0;
+    this.fragmentTimer = 0;
+    this.fragmentBombCooldown = 0;
     this.slingshotCooldown = 0;
     this.absorbCombo = 0;
     this.absorbComboTimer = 0;
@@ -858,7 +863,7 @@ export class Main extends Phaser.Scene {
           this.spawnFloatLabel(a.x, a.y, a.mass, 0xffaa44);
           const shakeMag = Math.min(0.004 + a.mass / 50000, 0.012);
           this.cameras.main.shake(220, shakeMag);
-        } else if (a.mass >= this.player.mass * ABSORB_RATIO && this.spawnProtectTimer <= 0 && this.shieldTimer <= 0) {
+        } else if (a.mass >= this.player.mass * ABSORB_RATIO && this.spawnProtectTimer <= 0 && this.shieldTimer <= 0 && this.fragmentTimer <= 0) {
           // Asteroid absorbs player (it's a planet-sized body)
           this.phase = 'consumed';
           this.showEndScreen(false, `CRUSHED BY ASTEROID`);
@@ -983,6 +988,7 @@ export class Main extends Phaser.Scene {
         shieldCooldown: this.shieldCooldown,
         brakeCooldown: this.brakeCooldown,
         gravityWellCooldown: this.gravityWellCooldown,
+        fragmentBombCooldown: this.fragmentBombCooldown,
         estimatedPayout,
         myRank,
         prizePool,
@@ -1146,6 +1152,11 @@ export class Main extends Phaser.Scene {
     this.ejectCooldown       = Math.max(0, this.ejectCooldown - dt);
     this.brakeCooldown       = Math.max(0, this.brakeCooldown - dt);
     this.gravityWellCooldown = Math.max(0, this.gravityWellCooldown - dt);
+    this.fragmentBombCooldown = Math.max(0, this.fragmentBombCooldown - dt);
+    if (this.fragmentTimer > 0) {
+      this.fragmentTimer -= dt;
+      if (this.fragmentTimer < 0) this.fragmentTimer = 0;
+    }
 
     // Tick down shield and cooldown
     if (this.shieldTimer > 0) {
@@ -1257,6 +1268,23 @@ export class Main extends Phaser.Scene {
         this.cameras.main.shake(100, 0.006);
       }
     }
+
+    // FRAGMENTATION BOMB — R key: spend 20% mass as an unrecoverable debris cloud
+    // (real, server-synced dust other players can scavenge) and gain a brief
+    // absorption-immunity window to dodge/confuse attackers. Server-authoritative
+    // (isFragmenting synced via schema) so bots/other clients honor it too.
+    if (actions.fragmentBomb) {
+      if (this.fragmentBombCooldown <= 0 && this.player.mass > FRAGMENT_MIN_MASS) {
+        const massCost = Math.max(25, this.player.mass * FRAGMENT_MASS_COST_PCT);
+        this.player.mass = Math.max(15, this.player.mass - massCost);
+        this.net?.sendUseAbility("fragment_bomb");
+        this.fragmentBombCooldown = FRAGMENT_COOLDOWN;
+        this.fragmentTimer = FRAGMENT_DURATION;
+        this.sfx.brake(); // reuse — distinct cast chime not yet authored
+        this.spawnBurst(this.player.x, this.player.y, 36, 180, 0xcccccc, 1.0);
+        this.cameras.main.shake(150, 0.008);
+      }
+    }
   }
 
   /** Increment the absorption combo and announce at key thresholds. */
@@ -1318,7 +1346,7 @@ export class Main extends Phaser.Scene {
       const touchDistSq = (pr + rr) * (pr + rr);
       if (dx * dx + dy * dy > touchDistSq) continue;
 
-      if (pm >= rp.mass * ABSORB_RATIO && !rp.isSpawnProtected && !rp.isShielded) {
+      if (pm >= rp.mass * ABSORB_RATIO && !rp.isSpawnProtected && !rp.isShielded && !rp.isFragmenting) {
         // We absorb them: momentum conservation
         const tm = pm + rp.mass;
         this.player.vx = (this.player.vx * pm + rp.vx * rp.mass) / tm;
@@ -1341,7 +1369,7 @@ export class Main extends Phaser.Scene {
         if (this.killStreak >= 2) {
           this.hud.triggerMilestone(`KILL STREAK ×${this.killStreak}!`, 2.2);
         }
-      } else if (rp.mass >= pm * ABSORB_RATIO && this.spawnProtectTimer <= 0 && this.shieldTimer <= 0) {
+      } else if (rp.mass >= pm * ABSORB_RATIO && this.spawnProtectTimer <= 0 && this.shieldTimer <= 0 && this.fragmentTimer <= 0) {
         // They absorb us: game over (blocked during spawn protection or active shield)
         this.phase = 'consumed';
         const killerName = rp.name || rp.id.slice(0, 6).toUpperCase();
@@ -1720,6 +1748,23 @@ export class Main extends Phaser.Scene {
       // Secondary inner ring (dimmer)
       this.gfx.lineStyle(Math.max(1, radius * 0.03), 0xffe066, alpha * 0.55);
       this.gfx.strokeCircle(x, y, radius * 1.30);
+    }
+
+    // ── R-key Fragmentation Bomb — scattered dashed shards while reassembling ──
+    if (this.fragmentTimer > 0) {
+      const t_fr = this.time.now / 1000;
+      const fade = this.fragmentTimer / FRAGMENT_DURATION;
+      const shardCount = 8;
+      this.gfx.lineStyle(Math.max(1.5, radius * 0.05), 0xcccccc, fade * 0.7);
+      for (let i = 0; i < shardCount; i++) {
+        const ang = (i / shardCount) * Math.PI * 2 + t_fr * 2.5;
+        const inner = radius * 1.2;
+        const outer = radius * 1.7;
+        this.gfx.lineBetween(
+          x + Math.cos(ang) * inner, y + Math.sin(ang) * inner,
+          x + Math.cos(ang) * outer, y + Math.sin(ang) * outer,
+        );
+      }
     }
 
     // ── Absorption impact flash — white halo burst on absorb ─────────────

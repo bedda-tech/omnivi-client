@@ -72,6 +72,22 @@ export class RemotePlayerManager {
         gfx.strokeCircle(rx, ry, r * 1.35);
       }
 
+      // Fragmentation Bomb — brief post-explosion dodge window: scattered dashed rays
+      // rather than a solid ring, reading as "still reassembling" rather than shielded.
+      if (rp.isFragmenting) {
+        const shardCount = 8;
+        gfx.lineStyle(2, 0xcccccc, 0.6);
+        for (let i = 0; i < shardCount; i++) {
+          const ang = (i / shardCount) * Math.PI * 2 + tSec * 2;
+          const inner = r * 1.2;
+          const outer = r * 1.6;
+          gfx.lineBetween(
+            rx + Math.cos(ang) * inner, ry + Math.sin(ang) * inner,
+            rx + Math.cos(ang) * outer, ry + Math.sin(ang) * outer,
+          );
+        }
+      }
+
       // Name label above the player circle
       if (!this.nameLabels.has(id)) {
         const lbl = this.scene.add.text(0, 0, rp.name, {

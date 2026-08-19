@@ -123,6 +123,7 @@ export interface RemotePlayer {
   isShielded: boolean;
   isTestnetTier: boolean;
   isHunting: boolean;
+  isFragmenting: boolean;
 }
 
 // ─── Gravity well (server-authoritative, synced so all clients pull consistently) ──
@@ -421,7 +422,7 @@ export class NetworkManager {
    * Notify server that we activated an ability so it can deduct mass server-side.
    * Server recomputes the actual cost from its own mass value.
    */
-  sendUseAbility(type: "boost" | "shield" | "eject" | "brake" | "gravity_well"): void {
+  sendUseAbility(type: "boost" | "shield" | "eject" | "brake" | "gravity_well" | "fragment_bomb"): void {
     this.room?.send("use_ability", { type });
   }
 
@@ -566,5 +567,6 @@ function mapPlayer(sessionId: string, p: any): RemotePlayer {
     isShielded:       p.isShielded       ?? false,
     isTestnetTier:    p.isTestnetTier    ?? false,
     isHunting:        p.isHunting        ?? false,
+    isFragmenting:    p.isFragmenting    ?? false,
   };
 }

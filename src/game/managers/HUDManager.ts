@@ -45,6 +45,7 @@ export interface MassHudState {
   shieldCooldown: number;
   brakeCooldown: number;
   gravityWellCooldown: number;
+  fragmentBombCooldown: number;
   estimatedPayout: number;
   myRank: number;
   prizePool: number;
@@ -259,8 +260,8 @@ export class HUDManager {
 
   updateMassHUD(state: MassHudState) {
     const { playerMass, buyInTokens, tierLabel, spawnProtectTimer,
-      boostCooldown, ejectCooldown, shieldCooldown, brakeCooldown, gravityWellCooldown, estimatedPayout, myRank, prizePool,
-      isTestnetTier } = state;
+      boostCooldown, ejectCooldown, shieldCooldown, brakeCooldown, gravityWellCooldown, fragmentBombCooldown,
+      estimatedPayout, myRank, prizePool, isTestnetTier } = state;
     this.testnetBadgeText.setVisible(isTestnetTier);
     const unit = isTestnetTier ? "PTS" : "VI";
     const vi = Math.floor(playerMass);
@@ -278,7 +279,8 @@ export class HUDManager {
     const cdShield = shieldCooldown > 0 ? `${shieldCooldown.toFixed(1)}s` : "READY";
     const cdBrake  = brakeCooldown  > 0 ? `${brakeCooldown.toFixed(1)}s`  : "READY";
     const cdGrav   = gravityWellCooldown > 0 ? `${gravityWellCooldown.toFixed(1)}s` : "READY";
-    hudLines.push(`Shift:${cdBoost}  Q:${cdEject}  F:${cdShield}  Space:${cdBrake}  G:${cdGrav}`);
+    const cdFrag   = fragmentBombCooldown > 0 ? `${fragmentBombCooldown.toFixed(1)}s` : "READY";
+    hudLines.push(`Shift:${cdBoost}  Q:${cdEject}  F:${cdShield}  Space:${cdBrake}  G:${cdGrav}  R:${cdFrag}`);
     this.massText.setColor(losing ? "#ff3333" : deltaVI > 0 ? "#00ff88" : "#ffffff");
     this.massText.setText(hudLines.join("\n"));
   }

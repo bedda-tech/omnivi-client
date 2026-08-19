@@ -78,6 +78,10 @@ export const GRAVITY_WELL_MASS_COST_PCT = 0.12;  // 12% of mass spent per gravit
 export const GRAVITY_WELL_MIN_MASS      = 100;   // minimum mass required to cast
 export const GRAVITY_WELL_COOLDOWN      = 15.0;  // seconds between casts — mirror server
 export const GRAVITY_WELL_DURATION      = 5.0;   // seconds the well persists — mirror server
+export const FRAGMENT_MASS_COST_PCT = 0.20;  // 20% of mass spent per fragmentation bomb — mirror server
+export const FRAGMENT_MIN_MASS      = 100;   // minimum mass required to cast
+export const FRAGMENT_COOLDOWN      = 14.0;  // seconds between casts — mirror server
+export const FRAGMENT_DURATION      = 2.0;   // seconds of absorption immunity — mirror server
 export const COMBO_TIMEOUT       = 2.5;    // seconds of inactivity before combo resets
 export const COMBO_ANNOUNCE_THRESHOLDS = [5, 10, 20, 50] as const;
 

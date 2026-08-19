@@ -15,9 +15,10 @@ export interface ActionResult {
   escape: boolean;  // E JustDown / ESC button tap
   brake: boolean;   // Space JustDown / BRK button tap
   gravityWell: boolean; // G JustDown / GRAV button tap
+  fragmentBomb: boolean; // R JustDown / FRAG button tap
 }
 
-type ActionKey = "boost" | "eject" | "shield" | "escape" | "brake" | "gravityWell";
+type ActionKey = "boost" | "eject" | "shield" | "escape" | "brake" | "gravityWell" | "fragmentBomb";
 
 interface TouchButtonDef {
   key: ActionKey;
@@ -56,6 +57,7 @@ export class InputManager {
   private keyF: Phaser.Input.Keyboard.Key;
   private keySpace: Phaser.Input.Keyboard.Key;
   private keyG: Phaser.Input.Keyboard.Key;
+  private keyR: Phaser.Input.Keyboard.Key;
 
   private pointer: Phaser.Input.Pointer;
   private mouseDown = false;
@@ -83,10 +85,10 @@ export class InputManager {
   // ── On-screen action buttons (touch) ────────────────────────────────────
   private btnDefs: TouchButtonDef[] = [];
   private btnPointerIds: Record<ActionKey, number | null> = {
-    boost: null, eject: null, shield: null, escape: null, brake: null, gravityWell: null,
+    boost: null, eject: null, shield: null, escape: null, brake: null, gravityWell: null, fragmentBomb: null,
   };
   private btnPending: Record<ActionKey, boolean> = {
-    boost: false, eject: false, shield: false, escape: false, brake: false, gravityWell: false,
+    boost: false, eject: false, shield: false, escape: false, brake: false, gravityWell: false, fragmentBomb: false,
   };
 
   private touchGfx: Phaser.GameObjects.Graphics | null = null;
@@ -105,6 +107,7 @@ export class InputManager {
     this.keyF     = kb.addKey(Phaser.Input.Keyboard.KeyCodes.F);
     this.keySpace = kb.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
     this.keyG     = kb.addKey(Phaser.Input.Keyboard.KeyCodes.G);
+    this.keyR     = kb.addKey(Phaser.Input.Keyboard.KeyCodes.R);
 
     this.useTouch = FORCE_MOBILE || scene.sys.game.device.input.touch;
     this.pointer  = scene.input.activePointer;
@@ -157,6 +160,7 @@ export class InputManager {
       { key: "escape",      label: "ESC",  x: anchorX + half,            y: anchorY + half },
       { key: "brake",       label: "BRK",  x: anchorX,                   y: anchorY - half - BTN_GAP },
       { key: "gravityWell", label: "GRAV", x: anchorX - half - BTN_GAP,  y: anchorY - half },
+      { key: "fragmentBomb", label: "FRAG", x: anchorX - half - BTN_GAP,  y: anchorY + half },
     ];
   }
 
@@ -328,8 +332,9 @@ export class InputManager {
     const escape      = Phaser.Input.Keyboard.JustDown(this.keyE);
     const brake       = Phaser.Input.Keyboard.JustDown(this.keySpace);
     const gravityWell = Phaser.Input.Keyboard.JustDown(this.keyG);
+    const fragmentBomb = Phaser.Input.Keyboard.JustDown(this.keyR);
 
-    if (!this.useTouch) return { boost, eject, shield, escape, brake, gravityWell };
+    if (!this.useTouch) return { boost, eject, shield, escape, brake, gravityWell, fragmentBomb };
     return {
       boost:       boost       || this.consumeButton("boost"),
       eject:       eject       || this.consumeButton("eject"),
@@ -337,6 +342,7 @@ export class InputManager {
       escape:      escape      || this.consumeButton("escape"),
       brake:       brake       || this.consumeButton("brake"),
       gravityWell: gravityWell || this.consumeButton("gravityWell"),
+      fragmentBomb: fragmentBomb || this.consumeButton("fragmentBomb"),
     };
   }
 }
