@@ -31,6 +31,11 @@ import {
   type BurstParticle, type TrailPoint, type FloatLabel,
 } from "../entities";
 
+// Motion-streak thresholds (px/s) below which dust/asteroids draw no trail —
+// render-tuning only, not gameplay-affecting, so kept local rather than in constants.ts.
+const DUST_TRAIL_MIN_SPEED = 40;
+const ASTEROID_TRAIL_MIN_SPEED = 15;
+
 // ─── Main Scene ────────────────────────────────────────────────────────────
 export class Main extends Phaser.Scene {
   player!: Player;
@@ -1628,6 +1633,17 @@ export class Main extends Phaser.Scene {
       const bi = Math.round(0xff + t * (0x11 - 0xff));
       const color = (ri << 16) | (gi << 8) | bi;
       const alpha = 0.55 + t * 0.35;
+      // Motion streak: cheap velocity-based line, no persistent per-particle state
+      // (same approach as drawSpeedLines) — avoids a trailPoints array on up to
+      // MAX_DUST=600 objects, which would be real per-frame push/age/draw overhead.
+      const speed = Math.hypot(d.vx, d.vy);
+      if (speed > DUST_TRAIL_MIN_SPEED) {
+        const streakT = Math.min(1, (speed - DUST_TRAIL_MIN_SPEED) / 250);
+        const len = r * (1 + streakT * 2.5);
+        const nx = d.vx / speed, ny = d.vy / speed;
+        this.gfx.lineStyle(Math.max(1, r * 0.5), color, alpha * 0.4 * streakT);
+        this.gfx.lineBetween(d.x, d.y, d.x - nx * len, d.y - ny * len);
+      }
       this.gfx.fillStyle(color, alpha);
       this.gfx.fillCircle(d.x, d.y, r);
     }
@@ -2266,6 +2282,18 @@ export class Main extends Phaser.Scene {
       const gi = Math.round(0x55 + t * (0x99 - 0x55));
       const bi = Math.round(0x44 + t * (0x44 - 0x44));
       fillColor = (ri << 16) | (gi << 8) | bi;
+    }
+
+    // Motion streak: cheap velocity-based line, no persistent state (same
+    // approach as the dust trail above — asteroids are fewer but a per-object
+    // trailPoints array is still unwarranted for a render-only flourish).
+    const speed = Math.hypot(a.vx, a.vy);
+    if (speed > ASTEROID_TRAIL_MIN_SPEED) {
+      const streakT = Math.min(1, (speed - ASTEROID_TRAIL_MIN_SPEED) / 150);
+      const len = r * (0.8 + streakT * 2);
+      const nx = a.vx / speed, ny = a.vy / speed;
+      this.gfx.lineStyle(Math.max(1, r * 0.4), fillColor, 0.25 * streakT);
+      this.gfx.lineBetween(a.x, a.y, a.x - nx * len, a.y - ny * len);
     }
 
     // Draw filled polygon
