@@ -51,6 +51,12 @@ export class RemotePlayerManager {
       traceOrganicCircle(gfx, rx, ry, r, tSec, rr.shapeSeed);
       gfx.strokePath();
 
+      // Glowing core — bright pulsing center, distinct from the body fill
+      const coreColor = Phaser.Display.Color.IntegerToColor(color).clone().lighten(35).color;
+      const corePulse = 0.55 + 0.45 * Math.sin(tSec * 2.2 + rr.shapeSeed);
+      gfx.fillStyle(coreColor, 0.25 + corePulse * 0.25);
+      gfx.fillCircle(rx, ry, r * (0.3 + corePulse * 0.1));
+
       // Thrust flash
       if (rp.isThrusting) {
         gfx.fillStyle(0xff6600, 0.35);

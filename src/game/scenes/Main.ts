@@ -1797,6 +1797,12 @@ export class Main extends Phaser.Scene {
     traceOrganicCircle(this.gfx, x, y, radius, tSec, this.player.shapeSeed);
     this.gfx.fillPath();
 
+    // ── Glowing core — bright pulsing center, distinct from the body fill ──
+    const coreColor = Phaser.Display.Color.HSLToColor(hue, 0.5, 0.92).color;
+    const corePulse = 0.55 + 0.45 * Math.sin(tSec * 2.2 + this.player.shapeSeed);
+    this.gfx.fillStyle(coreColor, 0.25 + corePulse * 0.25);
+    this.gfx.fillCircle(x, y, radius * (0.3 + corePulse * 0.1));
+
     this.gfx.lineStyle(Math.max(1, radius * 0.04), 0xffffff, 0.7);
     traceOrganicCircle(this.gfx, x, y, radius, tSec, this.player.shapeSeed);
     this.gfx.strokePath();
