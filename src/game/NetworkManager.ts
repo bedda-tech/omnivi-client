@@ -1,4 +1,4 @@
-import { Client, Room } from "colyseus.js";
+import { Client, Room, getStateCallbacks } from "colyseus.js";
 
 // ─── Player name generation ────────────────────────────────────────────────────
 const ADJECTIVES = ["Stellar","Cosmic","Nebula","Solar","Void","Dark","Swift","Silent","Rogue","Quantum"];
@@ -261,8 +261,10 @@ export class NetworkManager {
 
   /** Wire all state/message handlers onto a room instance (used on initial join and after reconnect). */
   private _attachHandlers(room: Room): void {
+    const $ = getStateCallbacks(room)(room.state);
+
     // Track remote players; also track own player for server mass corrections
-    room.state.players.onAdd((player: any, sessionId: string) => {
+    $.players.onAdd((player: any, sessionId: string) => {
       if (sessionId === this._mySessionId) {
         this._serverMass = player.mass;
         player.onChange(() => {
@@ -281,25 +283,25 @@ export class NetworkManager {
       });
     });
 
-    room.state.players.onRemove((_player: any, sessionId: string) => {
+    $.players.onRemove((_player: any, sessionId: string) => {
       this._players.delete(sessionId);
       this._onPlayerRemoved?.(sessionId);
     });
 
     // Sync server-managed dust particles (thrust exhaust dust for mass credit)
-    room.state.dust.onAdd((d: any, id: string) => {
+    $.dust.onAdd((d: any, id: string) => {
       this._onServerDustAdded?.(id, d.x, d.y, d.mass, d.kind ?? "dust");
     });
-    room.state.dust.onRemove((_d: any, id: string) => {
+    $.dust.onRemove((_d: any, id: string) => {
       this._onServerDustRemoved?.(id);
     });
 
     // Sync server-authoritative gravity wells (Gravity Well ability) — static once
     // cast, so onAdd is all we need beyond eventual onRemove at expiry.
-    room.state.gravityWells.onAdd((w: any, id: string) => {
+    $.gravityWells.onAdd((w: any, id: string) => {
       this._gravityWells.set(id, { id, ownerId: w.ownerId, x: w.x, y: w.y, strength: w.strength, expiresAt: w.expiresAt });
     });
-    room.state.gravityWells.onRemove((_w: any, id: string) => {
+    $.gravityWells.onRemove((_w: any, id: string) => {
       this._gravityWells.delete(id);
     });
 
