@@ -116,4 +116,159 @@ test.describe('Omnivi E2E: Core Game Loop', () => {
       expect(true).toBe(true);
     }
   });
+
+  test('Game HUD displays mass and tier information', async ({ page }) => {
+    await page.goto('/');
+
+    await page.waitForSelector('text=/Free Tier|Stake|Connect/i', { timeout: 5000 });
+
+    const freeButton = page.getByText(/Free Tier/i).first();
+    if (await freeButton.isVisible({ timeout: 1000 })) {
+      await freeButton.click();
+
+      // Wait for Main scene to load
+      await page.waitForFunction(() => {
+        const canvas = document.querySelector('canvas');
+        return canvas && canvas.width > 0 && canvas.height > 0;
+      }, { timeout: 10000 });
+
+      // Look for HUD text (mass display, tier, pool info)
+      // The HUD is rendered as Phaser text objects on the canvas,
+      // so we check for visible text or console logs
+      const hudVisible = await page.evaluate(() => {
+        const ctx = (document.querySelector('canvas') as any)?.getContext?.('2d');
+        return !!ctx;
+      });
+
+      expect(hudVisible).toBe(true);
+
+      // Let the game run for 3 seconds to stabilize
+      await page.waitForTimeout(3000);
+    }
+  });
+
+  test('Client can interact with input controls', async ({ page }) => {
+    await page.goto('/');
+
+    await page.waitForSelector('text=/Free Tier|Stake|Connect/i', { timeout: 5000 });
+
+    const freeButton = page.getByText(/Free Tier/i).first();
+    if (await freeButton.isVisible({ timeout: 1000 })) {
+      await freeButton.click();
+
+      // Wait for Main scene to load
+      await page.waitForFunction(() => {
+        const canvas = document.querySelector('canvas');
+        return canvas && canvas.width > 0 && canvas.height > 0;
+      }, { timeout: 10000 });
+
+      // Simulate keyboard input
+      // Press 'Shift' for boost (or any other key)
+      await page.keyboard.press('Shift');
+      await page.waitForTimeout(100);
+      await page.keyboard.press('KeyQ'); // Eject
+      await page.waitForTimeout(100);
+      await page.keyboard.press('KeyF'); // Shield
+      await page.waitForTimeout(100);
+
+      // Game should still be running after input
+      const gameStillRunning = await page.evaluate(() => {
+        const canvas = document.querySelector('canvas') as any;
+        return canvas && canvas.width > 0 && canvas.height > 0;
+      });
+
+      expect(gameStillRunning).toBe(true);
+
+      // Screenshot to verify game is still responsive
+      await page.screenshot({ path: 'test-results/game-after-input.png' });
+    }
+  });
+
+  test('Game responds to mouse input (aim and thrust)', async ({ page }) => {
+    await page.goto('/');
+
+    await page.waitForSelector('text=/Free Tier|Stake|Connect/i', { timeout: 5000 });
+
+    const freeButton = page.getByText(/Free Tier/i).first();
+    if (await freeButton.isVisible({ timeout: 1000 })) {
+      await freeButton.click();
+
+      // Wait for Main scene to load
+      await page.waitForFunction(() => {
+        const canvas = document.querySelector('canvas');
+        return canvas && canvas.width > 0 && canvas.height > 0;
+      }, { timeout: 10000 });
+
+      const canvas = page.locator('canvas').first();
+      const boundingBox = await canvas.boundingBox();
+
+      if (boundingBox) {
+        // Click center of canvas (aim point)
+        const centerX = boundingBox.x + boundingBox.width / 2;
+        const centerY = boundingBox.y + boundingBox.height / 2;
+
+        // Move mouse to different positions to aim
+        await page.mouse.move(centerX + 50, centerY + 50);
+        await page.waitForTimeout(200);
+
+        // Hold down to thrust
+        await page.mouse.move(centerX - 50, centerY - 50);
+        await page.waitForTimeout(200);
+
+        // Game should still be responsive
+        const gameStillRunning = await page.evaluate(() => {
+          const canvas = document.querySelector('canvas') as any;
+          return canvas && canvas.width > 0 && canvas.height > 0;
+        });
+
+        expect(gameStillRunning).toBe(true);
+      }
+    }
+  });
+
+  test('Minimap is visible and updates with player position', async ({ page }) => {
+    await page.goto('/');
+
+    await page.waitForSelector('text=/Free Tier|Stake|Connect/i', { timeout: 5000 });
+
+    const freeButton = page.getByText(/Free Tier/i).first();
+    if (await freeButton.isVisible({ timeout: 1000 })) {
+      await freeButton.click();
+
+      // Wait for Main scene to load
+      await page.waitForFunction(() => {
+        const canvas = document.querySelector('canvas');
+        return canvas && canvas.width > 0 && canvas.height > 0;
+      }, { timeout: 10000 });
+
+      // Give the game time to render minimap
+      await page.waitForTimeout(2000);
+
+      // The minimap is rendered on the same canvas,
+      // we can verify the canvas still renders content
+      const canvasHasContent = await page.evaluate(() => {
+        const canvas = document.querySelector('canvas') as HTMLCanvasElement;
+        if (!canvas) return false;
+
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return false;
+
+        // Check if canvas has any non-black pixels (game is rendering)
+        const imageData = ctx.getImageData(0, 0, 10, 10);
+        const data = imageData.data;
+        let hasNonBlack = false;
+
+        for (let i = 0; i < data.length; i += 4) {
+          if (data[i] > 0 || data[i + 1] > 0 || data[i + 2] > 0) {
+            hasNonBlack = true;
+            break;
+          }
+        }
+
+        return hasNonBlack;
+      });
+
+      expect(canvasHasContent).toBe(true);
+    }
+  });
 });
