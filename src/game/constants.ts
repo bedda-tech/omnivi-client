@@ -82,6 +82,10 @@ export const FRAGMENT_MASS_COST_PCT = 0.20;  // 20% of mass spent per fragmentat
 export const FRAGMENT_MIN_MASS      = 100;   // minimum mass required to cast
 export const FRAGMENT_COOLDOWN      = 14.0;  // seconds between casts — mirror server
 export const FRAGMENT_DURATION      = 2.0;   // seconds of absorption immunity — mirror server
+export const CLOAK_MASS_COST_PCT    = 0.06;  // 6% of mass spent per cloak activation — mirror server
+export const CLOAK_MIN_MASS         = 100;   // minimum mass required to cast
+export const CLOAK_COOLDOWN         = 10.0;  // seconds between cloaks — mirror server
+export const CLOAK_DURATION         = 3.5;   // seconds of invisibility — mirror server
 export const COMBO_TIMEOUT       = 2.5;    // seconds of inactivity before combo resets
 export const COMBO_ANNOUNCE_THRESHOLDS = [5, 10, 20, 50] as const;
 
