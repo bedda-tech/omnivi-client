@@ -124,6 +124,7 @@ export interface RemotePlayer {
   isTestnetTier: boolean;
   isHunting: boolean;
   isFragmenting: boolean;
+  isCloaked: boolean;
 }
 
 // ─── Gravity well (server-authoritative, synced so all clients pull consistently) ──
@@ -570,5 +571,6 @@ function mapPlayer(sessionId: string, p: any): RemotePlayer {
     isTestnetTier:    p.isTestnetTier    ?? false,
     isHunting:        p.isHunting        ?? false,
     isFragmenting:    p.isFragmenting    ?? false,
+    isCloaked:        p.isCloaked        ?? false,
   };
 }

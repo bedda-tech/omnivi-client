@@ -18,6 +18,7 @@ export class RemotePlayerManager {
 
     for (const [id, rp] of otherPlayers) {
       if (rp.phase !== "alive") continue;
+      if (rp.isCloaked) continue;
       seen.add(id);
 
       // Dead-reckoning: lerp render pos toward server pos + velocity * estimated lag
@@ -127,6 +128,7 @@ export class RemotePlayerManager {
   ): void {
     for (const [, rp] of otherPlayers) {
       if (rp.phase !== "alive") continue;
+      if (rp.isCloaked) continue;
       gfx.fillStyle(parseHslColor(rp.color), 0.9);
       gfx.fillCircle(wx(rp.x), wy(rp.y), 3);
     }
