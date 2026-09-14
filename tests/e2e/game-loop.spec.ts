@@ -1,274 +1,148 @@
 import { test, expect } from '@playwright/test';
+import {
+  SERVER_HTTP,
+  bootClient,
+  collectErrors,
+  enterGame,
+  serverIsUp,
+  snapshot,
+  waitForSnapshot,
+} from './harness';
 
+/**
+ * End-to-end coverage of the core loop against a real browser and a real
+ * Colyseus server. Assertions go through window.__omnivi (src/game/testHarness)
+ * because the whole game — menus, HUD, world — is canvas pixels with no DOM.
+ */
 test.describe('Omnivi E2E: Core Game Loop', () => {
-  test.beforeEach(async ({ page }) => {
-    // Check if server is running before proceeding
-    try {
-      const healthCheck = await fetch('http://localhost:3001/health', {
-        method: 'GET',
-      });
-      test.skip(!healthCheck.ok, 'Server not running — skipping E2E tests');
-    } catch {
-      test.skip(true, 'Server not running — skipping E2E tests');
-    }
+  let serverUp = false;
+
+  test.beforeAll(async () => {
+    serverUp = await serverIsUp();
   });
 
-  test('Client loads and detects server connection', async ({ page }) => {
-    await page.goto('/');
-
-    // Wait for Phaser to initialize and load the Lobby scene
-    await expect(page).toHaveTitle(/Omnivi/i);
-
-    // Verify the Lobby scene loads (should show "Free Tier" or stake input)
-    await page.waitForSelector('text=/Free Tier|Stake|Connect/i', { timeout: 5000 });
-
-    // Screenshot for debugging
-    await page.screenshot({ path: 'test-results/lobby-loaded.png' });
+  test.beforeEach(() => {
+    test.skip(!serverUp, `No game server at ${SERVER_HTTP} — start omnivi-server`);
   });
 
-  test('Game scene initializes with network connection', async ({ page }) => {
-    await page.goto('/');
+  test('client boots Phaser through to the main menu', async ({ page }) => {
+    const errors = collectErrors(page);
+    await bootClient(page);
 
-    // Wait for Lobby scene to load
-    await page.waitForSelector('text=/Free Tier|Stake|Connect/i', { timeout: 5000 });
-
-    // Click "Free Tier" button to join without staking
-    const freeButton = page.getByText(/Free Tier/i).first();
-    if (await freeButton.isVisible({ timeout: 1000 })) {
-      await freeButton.click();
-
-      // Wait for Main scene to load (player spawned)
-      // The Main scene should show the game canvas with players/physics
-      await page.waitForFunction(() => {
-        const canvas = document.querySelector('canvas');
-        return canvas && canvas.width > 0 && canvas.height > 0;
-      }, { timeout: 10000 });
-
-      // Verify HUD is visible (mass display, etc.)
-      await expect(page.locator('canvas')).toBeVisible();
-
-      // Let the game run for 2 seconds to ensure no immediate crashes
-      await page.waitForTimeout(2000);
-
-      // Screenshot to verify game is rendering
-      await page.screenshot({ path: 'test-results/game-running.png' });
-    } else {
-      test.skip(true, 'Free Tier button not available — server may not be ready');
-    }
+    const s = await snapshot(page);
+    expect(s.activeScenes).toContain('MainMenu');
+    expect(s.canvas.width).toBeGreaterThan(0);
+    expect(s.canvas.height).toBeGreaterThan(0);
+    expect(s.inGame).toBe(false);
+    expect(errors).toEqual([]);
   });
 
-  test('Local player exists and physics engine is running', async ({ page }) => {
-    await page.goto('/');
+  test('entering the game spawns a local player with mass', async ({ page }) => {
+    await bootClient(page);
+    await enterGame(page);
 
-    await page.waitForSelector('text=/Free Tier|Stake|Connect/i', { timeout: 5000 });
-
-    const freeButton = page.getByText(/Free Tier/i).first();
-    if (await freeButton.isVisible({ timeout: 1000 })) {
-      await freeButton.click();
-
-      // Wait for Main scene
-      await page.waitForFunction(() => {
-        const canvas = document.querySelector('canvas');
-        return canvas && canvas.width > 0 && canvas.height > 0;
-      }, { timeout: 10000 });
-
-      // Inject code to check game state
-      const gameState = await page.evaluate(() => {
-        // Access the Phaser scene via window.game if available
-        // This is a best-effort check; exact implementation depends on how the client exposes state
-        return {
-          hasCanvas: !!document.querySelector('canvas'),
-          canvasWidth: (document.querySelector('canvas') as any)?.width || 0,
-          canvasHeight: (document.querySelector('canvas') as any)?.height || 0,
-        };
-      });
-
-      expect(gameState.hasCanvas).toBe(true);
-      expect(gameState.canvasWidth).toBeGreaterThan(0);
-      expect(gameState.canvasHeight).toBeGreaterThan(0);
-    }
+    const s = await snapshot(page);
+    expect(s.activeScenes).toContain('Main');
+    expect(s.activeScenes).not.toContain('MainMenu');
+    expect(s.player).not.toBeNull();
+    expect(s.player!.mass).toBeGreaterThan(0);
+    expect(s.player!.radius).toBeGreaterThan(0);
+    // Spawn is the world centre (also the black hole's future epicentre).
+    expect(s.player!.x).toBeGreaterThan(0);
+    expect(s.player!.y).toBeGreaterThan(0);
   });
 
-  test('Network manager can join room (with server running)', async ({ page }) => {
-    await page.goto('/');
+  test('world seeds dust and asteroids locally, and holds in lobby solo', async ({ page }) => {
+    await bootClient(page);
+    await enterGame(page);
 
-    // Set up listener for network events (if exposed)
-    const networkEvents: string[] = [];
-    page.on('console', (msg) => {
-      if (msg.type() === 'log' && msg.text().includes('room')) {
-        networkEvents.push(msg.text());
-      }
+    const s = await snapshot(page);
+    expect(s.dust).toBeGreaterThan(0);
+    expect(s.asteroids).toBeGreaterThan(0);
+    // Client-side bots were retired (constants: BOT_COUNT = 0) — NPCs now live
+    // in OmniviRoom, and OmniviRoom only spawns them when the round starts, so a
+    // solo client legitimately sees no other player at all.
+    expect(s.bots).toBe(0);
+    const solo = await waitForSnapshot(page, "s.net && s.net.phase === 'lobby'");
+    expect(solo.net!.otherPlayers).toBe(0);
+  });
+
+  test('physics engine advances the simulation', async ({ page }) => {
+    await bootClient(page);
+    await enterGame(page);
+
+    // Sampling only the player would pass on a frozen sim if it happened to
+    // spawn at rest on the attractor, so watch the dust population too — it is
+    // consumed and promoted to asteroids continuously while the round runs.
+    const before = await page.evaluate(() => {
+      const s = window.__omnivi.snapshot();
+      return { t: performance.now(), player: s.player, dust: s.dust };
+    });
+    await page.waitForTimeout(1500);
+    const after = await page.evaluate(() => {
+      const s = window.__omnivi.snapshot();
+      return { t: performance.now(), player: s.player, dust: s.dust };
     });
 
-    await page.waitForSelector('text=/Free Tier|Stake|Connect/i', { timeout: 5000 });
-
-    const freeButton = page.getByText(/Free Tier/i).first();
-    if (await freeButton.isVisible({ timeout: 1000 })) {
-      await freeButton.click();
-
-      // Wait for Main scene to load (means room joined successfully)
-      await page.waitForFunction(() => {
-        const canvas = document.querySelector('canvas');
-        return canvas && canvas.width > 0 && canvas.height > 0;
-      }, { timeout: 10000 });
-
-      // If we get here, the room join succeeded (no connection error)
-      expect(true).toBe(true);
-    }
+    expect(after.t - before.t).toBeGreaterThan(1000);
+    const moved =
+      after.dust !== before.dust ||
+      after.player!.x !== before.player!.x ||
+      after.player!.y !== before.player!.y ||
+      after.player!.mass !== before.player!.mass;
+    expect(moved, 'simulation state did not change over 1.5s').toBe(true);
   });
 
-  test('Game HUD displays mass and tier information', async ({ page }) => {
-    await page.goto('/');
+  test('client joins a Colyseus room and receives server state', async ({ page }) => {
+    await bootClient(page);
+    await enterGame(page);
 
-    await page.waitForSelector('text=/Free Tier|Stake|Connect/i', { timeout: 5000 });
+    const joined = await waitForSnapshot(page, 's.net && s.net.connected && s.net.sessionId');
+    expect(joined.net!.connected).toBe(true);
+    expect(joined.net!.sessionId).toMatch(/^\S+$/);
 
-    const freeButton = page.getByText(/Free Tier/i).first();
-    if (await freeButton.isVisible({ timeout: 1000 })) {
-      await freeButton.click();
-
-      // Wait for Main scene to load
-      await page.waitForFunction(() => {
-        const canvas = document.querySelector('canvas');
-        return canvas && canvas.width > 0 && canvas.height > 0;
-      }, { timeout: 10000 });
-
-      // Look for HUD text (mass display, tier, pool info)
-      // The HUD is rendered as Phaser text objects on the canvas,
-      // so we check for visible text or console logs
-      const hudVisible = await page.evaluate(() => {
-        const ctx = (document.querySelector('canvas') as any)?.getContext?.('2d');
-        return !!ctx;
-      });
-
-      expect(hudVisible).toBe(true);
-
-      // Let the game run for 3 seconds to stabilize
-      await page.waitForTimeout(3000);
-    }
+    // The room broadcasts its phase (lobby / active / …) in the first patches.
+    const withPhase = await waitForSnapshot(page, 's.net && s.net.phase');
+    expect(withPhase.net!.phase).not.toBe('');
   });
 
-  test('Client can interact with input controls', async ({ page }) => {
-    await page.goto('/');
+  test('holding thrust accelerates the player and burns mass', async ({ page }) => {
+    await bootClient(page);
+    await enterGame(page);
+    const errors = collectErrors(page);
 
-    await page.waitForSelector('text=/Free Tier|Stake|Connect/i', { timeout: 5000 });
+    const start = await snapshot(page);
+    const startSpeed = Math.hypot(start.player!.vx, start.player!.vy);
 
-    const freeButton = page.getByText(/Free Tier/i).first();
-    if (await freeButton.isVisible({ timeout: 1000 })) {
-      await freeButton.click();
+    // Default input mode aims with the pointer and thrusts while it is held
+    // down (InputManager: `thrusting: this.mouseDown`).
+    const box = await page.locator('canvas').boundingBox();
+    expect(box).not.toBeNull();
+    await page.mouse.move(box!.x + box!.width * 0.85, box!.y + box!.height * 0.5);
+    await page.mouse.down();
+    await page.waitForTimeout(1000);
+    await page.mouse.up();
 
-      // Wait for Main scene to load
-      await page.waitForFunction(() => {
-        const canvas = document.querySelector('canvas');
-        return canvas && canvas.width > 0 && canvas.height > 0;
-      }, { timeout: 10000 });
-
-      // Simulate keyboard input
-      // Press 'Shift' for boost (or any other key)
-      await page.keyboard.press('Shift');
-      await page.waitForTimeout(100);
-      await page.keyboard.press('KeyQ'); // Eject
-      await page.waitForTimeout(100);
-      await page.keyboard.press('KeyF'); // Shield
-      await page.waitForTimeout(100);
-
-      // Game should still be running after input
-      const gameStillRunning = await page.evaluate(() => {
-        const canvas = document.querySelector('canvas') as any;
-        return canvas && canvas.width > 0 && canvas.height > 0;
-      });
-
-      expect(gameStillRunning).toBe(true);
-
-      // Screenshot to verify game is still responsive
-      await page.screenshot({ path: 'test-results/game-after-input.png' });
-    }
+    const end = await snapshot(page);
+    const endSpeed = Math.hypot(end.player!.vx, end.player!.vy);
+    expect(endSpeed).toBeGreaterThan(startSpeed);
+    // Thrust ejects mass — burning fuel has to cost something.
+    expect(end.player!.mass).toBeLessThan(start.player!.mass);
+    expect(errors).toEqual([]);
   });
 
-  test('Game responds to mouse input (aim and thrust)', async ({ page }) => {
-    await page.goto('/');
+  test('ability and UI keys do not crash the scene', async ({ page }) => {
+    await bootClient(page);
+    await enterGame(page);
+    const errors = collectErrors(page);
 
-    await page.waitForSelector('text=/Free Tier|Stake|Connect/i', { timeout: 5000 });
-
-    const freeButton = page.getByText(/Free Tier/i).first();
-    if (await freeButton.isVisible({ timeout: 1000 })) {
-      await freeButton.click();
-
-      // Wait for Main scene to load
-      await page.waitForFunction(() => {
-        const canvas = document.querySelector('canvas');
-        return canvas && canvas.width > 0 && canvas.height > 0;
-      }, { timeout: 10000 });
-
-      const canvas = page.locator('canvas').first();
-      const boundingBox = await canvas.boundingBox();
-
-      if (boundingBox) {
-        // Click center of canvas (aim point)
-        const centerX = boundingBox.x + boundingBox.width / 2;
-        const centerY = boundingBox.y + boundingBox.height / 2;
-
-        // Move mouse to different positions to aim
-        await page.mouse.move(centerX + 50, centerY + 50);
-        await page.waitForTimeout(200);
-
-        // Hold down to thrust
-        await page.mouse.move(centerX - 50, centerY - 50);
-        await page.waitForTimeout(200);
-
-        // Game should still be responsive
-        const gameStillRunning = await page.evaluate(() => {
-          const canvas = document.querySelector('canvas') as any;
-          return canvas && canvas.width > 0 && canvas.height > 0;
-        });
-
-        expect(gameStillRunning).toBe(true);
-      }
+    for (const key of ['1', '2', '3', '4', 'Shift', 'Tab', 'n']) {
+      await page.keyboard.press(key);
+      await page.waitForTimeout(120);
     }
-  });
 
-  test('Minimap is visible and updates with player position', async ({ page }) => {
-    await page.goto('/');
-
-    await page.waitForSelector('text=/Free Tier|Stake|Connect/i', { timeout: 5000 });
-
-    const freeButton = page.getByText(/Free Tier/i).first();
-    if (await freeButton.isVisible({ timeout: 1000 })) {
-      await freeButton.click();
-
-      // Wait for Main scene to load
-      await page.waitForFunction(() => {
-        const canvas = document.querySelector('canvas');
-        return canvas && canvas.width > 0 && canvas.height > 0;
-      }, { timeout: 10000 });
-
-      // Give the game time to render minimap
-      await page.waitForTimeout(2000);
-
-      // The minimap is rendered on the same canvas,
-      // we can verify the canvas still renders content
-      const canvasHasContent = await page.evaluate(() => {
-        const canvas = document.querySelector('canvas') as HTMLCanvasElement;
-        if (!canvas) return false;
-
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return false;
-
-        // Check if canvas has any non-black pixels (game is rendering)
-        const imageData = ctx.getImageData(0, 0, 10, 10);
-        const data = imageData.data;
-        let hasNonBlack = false;
-
-        for (let i = 0; i < data.length; i += 4) {
-          if (data[i] > 0 || data[i + 1] > 0 || data[i + 2] > 0) {
-            hasNonBlack = true;
-            break;
-          }
-        }
-
-        return hasNonBlack;
-      });
-
-      expect(canvasHasContent).toBe(true);
-    }
+    const s = await snapshot(page);
+    expect(s.inGame, 'game scene died after key input').toBe(true);
+    expect(errors).toEqual([]);
   });
 });

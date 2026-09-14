@@ -262,13 +262,20 @@ export class NetworkManager {
 
   /** Wire all state/message handlers onto a room instance (used on initial join and after reconnect). */
   private _attachHandlers(room: Room): void {
-    const $ = getStateCallbacks(room)(room.state);
+    // On colyseus.js 0.16 the schema instances themselves carry no callbacks —
+    // every listener has to be registered through getStateCallbacks, including
+    // the ones on individual players and on the root state. Keep `callbacks`
+    // around: `$` is already bound to the root, so nested instances need their
+    // own binding rather than `player.onChange(...)`, which throws
+    // "player.onChange is not a function" and aborts the whole join.
+    const callbacks = getStateCallbacks(room);
+    const $ = callbacks(room.state);
 
     // Track remote players; also track own player for server mass corrections
     $.players.onAdd((player: any, sessionId: string) => {
       if (sessionId === this._mySessionId) {
         this._serverMass = player.mass;
-        player.onChange(() => {
+        callbacks(player).onChange(() => {
           if (player.mass !== this._serverMass) {
             this._serverMass = player.mass;
             this._onSelfMassUpdate?.(player.mass);
@@ -279,7 +286,7 @@ export class NetworkManager {
       const rp = mapPlayer(sessionId, player);
       this._players.set(sessionId, rp);
       this._onPlayerAdded?.(sessionId, rp);
-      player.onChange(() => {
+      callbacks(player).onChange(() => {
         this._players.set(sessionId, mapPlayer(sessionId, player));
       });
     });
@@ -344,7 +351,7 @@ export class NetworkManager {
       this._onLobbyReset?.();
     });
 
-    room.state.onChange(() => {
+    $.onChange(() => {
       const s = room.state;
       this._gameState = {
         phase: s.phase,

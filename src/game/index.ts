@@ -6,6 +6,7 @@ import { MainMenu } from "./scenes/MainMenu";
 import { RoundResults } from "./scenes/RoundResults";
 import { AUTO, Game, Scale } from "phaser";
 import { Preloader } from "./scenes/Preloader";
+import { installTestHarness } from "./testHarness";
 
 //  Find out more information about the Game Config at:
 //  https://newdocs.phaser.io/docs/3.70.0/Phaser.Types.Core.GameConfig
@@ -40,7 +41,16 @@ const config: Phaser.Types.Core.GameConfig = {
 };
 
 const StartGame = (parent: string) => {
-  return new Game({ ...config, parent });
+  const game = new Game({ ...config, parent });
+
+  // Everything this game draws lives inside a canvas, so E2E tests have no DOM
+  // to assert against — expose a read-only state hook instead. Dev/E2E only.
+  const env = (import.meta as any).env;
+  if (env?.DEV || env?.VITE_E2E === "1") {
+    installTestHarness(game);
+  }
+
+  return game;
 };
 
 export default StartGame;
