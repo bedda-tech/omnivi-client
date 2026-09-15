@@ -45,9 +45,18 @@ export async function bootClient(page: Page): Promise<void> {
  * Jump into the gameplay scene. Menu buttons are canvas-drawn, so clicking
  * them means clicking hard-coded pixel coordinates that break on every UI
  * retouch — the harness starts the scene directly instead.
+ *
+ * `practiceMode` buys room isolation as much as it bypasses the blockchain checks: the
+ * server defines "omnivi" with `.filterBy(["practice", "testnet"])`, so practice clients
+ * land in a room of their own. Any test that lets a round actually START must pass it —
+ * a live round leaves bots alive in the shared room, and the cases asserting a solo
+ * lobby or `otherPlayers === 0` then fail on the *next* run against the same server.
  */
-export async function enterGame(page: Page): Promise<void> {
-  await page.evaluate(() => window.__omnivi.start('Main', { practiceMode: false }));
+export async function enterGame(page: Page, practiceMode = false): Promise<void> {
+  await page.evaluate(
+    (practice) => window.__omnivi.start('Main', { practiceMode: practice }),
+    practiceMode,
+  );
   await page.waitForFunction(() => window.__omnivi.snapshot().inGame, { timeout: 15_000 });
 }
 

@@ -80,6 +80,45 @@ test.describe('Omnivi E2E: Multiplayer Gameplay', () => {
     }
   });
 
+  test('the culled positions_update stream reaches the client', async ({ browser }) => {
+    // Two seats to trip the min-player check, then a LOBBY_COUNTDOWN (15s) wait before
+    // the server marks anyone alive and starts ticking positions out.
+    test.setTimeout(120_000);
+
+    const a = await openPlayer(browser);
+    const b = await openPlayer(browser);
+    const logs: string[] = [];
+    a.page.on('console', (msg) => logs.push(msg.text()));
+
+    try {
+      for (const p of [a, b]) {
+        await bootClient(p.page);
+        // Practice room, so the round this test deliberately starts (and the bots it
+        // spawns) never leaks into the shared room the other cases assert a lobby on.
+        await enterGame(p.page, true);
+      }
+      await waitForSnapshot(a.page, 's.net && s.net.otherPlayers >= 1', 30_000);
+
+      // The server only sends these once the round is playing and our player is alive,
+      // so this transitively proves the lobby → round transition works too.
+      const s = await waitForSnapshot(a.page, 's.net && s.net.positionBatches > 0', 60_000);
+      expect(s.net!.positionBatches).toBeGreaterThan(0);
+
+      // Deliberately not asserting positionUpdatesApplied > 0: the batch is culled to
+      // VIEW_RADIUS (2000) and spawns scatter ±1000 on both axes, so an empty batch is
+      // legitimate rather than a bug. Measured 6 batches / 18 applied on a live round
+      // with bots — applyPositionUpdates' own semantics are covered by its unit tests.
+
+      // The regression this exists for: with no handler registered, colyseus.js warned
+      // "onMessage() not registered for type positions_update" dozens of times a second
+      // and every culled position was dropped on the floor.
+      expect(logs.filter((l) => l.includes('positions_update'))).toEqual([]);
+    } finally {
+      await a.close();
+      await b.close();
+    }
+  });
+
   test('a connected client keeps simulating without network errors', async ({ page }) => {
     const errors = collectErrors(page);
     await bootClient(page);

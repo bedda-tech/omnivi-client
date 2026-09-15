@@ -38,6 +38,9 @@ export interface HarnessNet {
   phase: string;
   shrinkTimer: number;
   prizePool: number;
+  /** `positions_update` batches received, and remote positions applied from them. */
+  positionBatches: number;
+  positionUpdatesApplied: number;
 }
 
 export interface HarnessSnapshot {
@@ -93,6 +96,8 @@ function readNet(main: any): HarnessNet | null {
     phase: state.phase ?? "",
     shrinkTimer: state.shrinkTimer ?? 0,
     prizePool: state.prizePool ?? 0,
+    positionBatches: net.positionBatches ?? 0,
+    positionUpdatesApplied: net.positionUpdatesApplied ?? 0,
   };
 }
 

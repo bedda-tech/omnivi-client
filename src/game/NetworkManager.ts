@@ -127,6 +127,20 @@ export interface RemotePlayer {
   isCloaked: boolean;
 }
 
+// ─── Culled position sync (one entry of the server's `positions_update` message) ──
+/** The server sends these every tick for the players within VIEW_RADIUS of us only
+ *  (OmniviRoom.sendPositionUpdates). Carries the fast-changing motion fields; the
+ *  schema patch still owns the slow ones (name, colour, phase, ability flags) and
+ *  remains the sole source of add/remove. */
+export interface PositionUpdate {
+  id: string;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  mass: number;
+}
+
 // ─── Gravity well (server-authoritative, synced so all clients pull consistently) ──
 export interface GravityWell {
   id: string;
@@ -236,6 +250,11 @@ export class NetworkManager {
   private _onDisconnected: (() => void) | null = null;
   /** Last server-authoritative mass for the local player (0 = not yet received). */
   private _serverMass: number = 0;
+  /** `positions_update` batches received, and entries actually applied from them.
+   *  Zero batches while alive means the culled sync path is dead again (the bug the
+   *  E2E suite caught when nothing handled the message at all). */
+  private _positionBatches: number = 0;
+  private _positionUpdatesApplied: number = 0;
 
   constructor(serverUrl: string = DEFAULT_SERVER_URL) {
     this.client = new Client(serverUrl);
@@ -311,6 +330,15 @@ export class NetworkManager {
     });
     $.gravityWells.onRemove((_w: any, id: string) => {
       this._gravityWells.delete(id);
+    });
+
+    // High-frequency culled position sync — the server ticks this out faster than it
+    // patches the schema, so it is what actually keeps remote players moving smoothly.
+    // It is additive to the schema sync, never a replacement: a player missing from a
+    // batch is out of view, not gone, so removal stays with players.onRemove above.
+    room.onMessage("positions_update", (updates: PositionUpdate[]) => {
+      this._positionBatches++;
+      this._positionUpdatesApplied += applyPositionUpdates(this._players, updates);
     });
 
     room.onMessage("claim_ready", (payload: ClaimReadyPayload) => {
@@ -547,6 +575,10 @@ export class NetworkManager {
   get connected(): boolean { return this.room !== null; }
   /** Last server-authoritative mass for the local player. 0 if not yet received. */
   get serverMass(): number { return this._serverMass; }
+  /** Count of `positions_update` batches received from the server. */
+  get positionBatches(): number { return this._positionBatches; }
+  /** Count of individual remote-player positions applied from those batches. */
+  get positionUpdatesApplied(): number { return this._positionUpdatesApplied; }
 
   disconnect(): void {
     this._intentionalLeave = true;
@@ -555,6 +587,38 @@ export class NetworkManager {
     this._players.clear();
     this._gravityWells.clear();
   }
+}
+
+/**
+ * Applies a `positions_update` batch onto the known remote players, in place.
+ *
+ * Ids we have no schema record for are skipped: players.onAdd owns creation, and a
+ * RemotePlayer built from motion fields alone would render nameless and colourless
+ * until the next patch. Non-finite numbers are skipped too — one NaN reaching
+ * RemotePlayerManager's lerp poisons that player's render position permanently,
+ * since `NaN + (x - NaN) * a` stays NaN forever.
+ *
+ * Returns how many entries were applied (the E2E suite asserts this is non-zero, which
+ * is how we know the culled path is live rather than being logged as unhandled).
+ */
+export function applyPositionUpdates(
+  players: Map<string, RemotePlayer>,
+  updates: PositionUpdate[],
+): number {
+  if (!Array.isArray(updates)) return 0;
+  let applied = 0;
+  for (const u of updates) {
+    const rp = players.get(u?.id);
+    if (!rp) continue;
+    if (!Number.isFinite(u.x) || !Number.isFinite(u.y)) continue;
+    rp.x = u.x;
+    rp.y = u.y;
+    if (Number.isFinite(u.vx)) rp.vx = u.vx;
+    if (Number.isFinite(u.vy)) rp.vy = u.vy;
+    if (Number.isFinite(u.mass)) rp.mass = u.mass;
+    applied++;
+  }
+  return applied;
 }
 
 function mapPlayer(sessionId: string, p: any): RemotePlayer {
