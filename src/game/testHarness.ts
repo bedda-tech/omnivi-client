@@ -26,6 +26,10 @@ export interface HarnessPlayer {
   mass: number;
   radius: number;
   rotation: number;
+  /** Seconds remaining in escape sequence, 0 if not escaping. */
+  escapeTimer: number;
+  /** Flash intensity when absorbing objects (0–1), fades each frame. */
+  absorbFlashIntensity: number;
 }
 
 /** Colyseus connection state, or null when the Main scene has no network manager. */
@@ -80,6 +84,8 @@ function readPlayer(main: any): HarnessPlayer | null {
     mass: p.mass,
     radius: p.radius,
     rotation: p.rotation,
+    escapeTimer: main?.escapeTimer ?? 0,
+    absorbFlashIntensity: main?.absorbFlashTimer ?? 0,
   };
 }
 

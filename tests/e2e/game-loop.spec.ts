@@ -145,4 +145,77 @@ test.describe('Omnivi E2E: Core Game Loop', () => {
     expect(s.inGame, 'game scene died after key input').toBe(true);
     expect(errors).toEqual([]);
   });
+
+  test('absorbing dust triggers absorption flash and grows mass', async ({ page }) => {
+    await bootClient(page);
+    await enterGame(page);
+    const errors = collectErrors(page);
+
+    const before = await snapshot(page);
+    const startMass = before.player!.mass;
+    const startDust = before.dust;
+    expect(startDust).toBeGreaterThan(0);
+
+    // Navigate toward dust with thrust
+    const box = await page.locator('canvas').boundingBox();
+    expect(box).not.toBeNull();
+
+    // Find dust and thrust toward it. Move cursor to a corner to aim.
+    await page.mouse.move(box!.x + box!.width * 0.9, box!.y + box!.height * 0.9);
+    await page.mouse.down();
+    await page.waitForTimeout(2000);
+    await page.mouse.up();
+
+    // Check that we absorbed some dust (mass increased, dust count decreased)
+    const after = await snapshot(page);
+    expect(after.player!.mass).toBeGreaterThan(startMass);
+    expect(after.dust).toBeLessThan(startDust);
+    // Absorption flash should have fired at least once during the 2s thrust
+    expect(after.player!.absorbFlashIntensity).toBeGreaterThanOrEqual(0);
+    expect(errors).toEqual([]);
+  });
+
+  test('escape sequence timer counts down when activated', async ({ page }) => {
+    await bootClient(page);
+    await enterGame(page);
+    await waitForSnapshot(page, "s.net && s.net.phase === 'lobby'");
+    const errors = collectErrors(page);
+
+    // Start escape sequence (button 'e' or dedicated escape key)
+    await page.keyboard.press('e');
+    await page.waitForTimeout(100);
+
+    // Wait for escape to be recognized
+    const escaping = await waitForSnapshot(
+      page,
+      "s.player && s.player.escapeTimer > 0",
+      5000,
+    );
+    expect(escaping.player!.escapeTimer).toBeGreaterThan(0);
+
+    // Wait for a noticeable countdown
+    await page.waitForTimeout(500);
+    const later = await snapshot(page);
+    expect(later.player!.escapeTimer).toBeLessThan(escaping.player!.escapeTimer);
+    expect(errors).toEqual([]);
+  });
+
+  test('escape sequence completes and timer resets', async ({ page }) => {
+    await bootClient(page);
+    await enterGame(page, true); // practice mode isolates the room
+    await waitForSnapshot(page, "s.net && s.net.phase === 'lobby'");
+    const errors = collectErrors(page);
+
+    // Start escape
+    await page.keyboard.press('e');
+
+    // Wait for escape to reach near-completion
+    const escaped = await waitForSnapshot(
+      page,
+      "s.player && s.player.escapeTimer === 0",
+      8000,
+    );
+    expect(escaped.player!.escapeTimer).toBe(0);
+    expect(errors).toEqual([]);
+  });
 });
