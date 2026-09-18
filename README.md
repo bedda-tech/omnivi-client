@@ -23,40 +23,63 @@ Omnivi is a real-time multiplayer `.io` game where mass is physics. You control 
 | Q | Eject mass (ranged weapon) |
 | E | Begin escape sequence |
 | F | Shield |
+| C | Cloak (invisibility) |
+| X | Fragmentation Bomb |
+| Z | Gravity Well |
 
 ## Stack
 
-- **Client**: Vite + React + PixiJS v8 (game canvas) + TypeScript
-- **Server**: Colyseus 0.15 + Node.js
-- **Physics**: Barnes-Hut quadtree, spatial grid culling
-- **Contracts**: Hardhat + Solidity on Base L2
+- **Client**: Vite + React + Phaser 3.55 + TypeScript
+- **Server**: Colyseus 0.16 + Node.js (running on port 8000)
+- **Physics**: Arcade physics engine, spatial grid (1000px cells)
+- **Contracts**: Hardhat + Solidity (GameVault.sol on Base Sepolia testnet)
+- **Testing**: Vitest (53 unit tests) + Playwright E2E tests
 
-## Development
+## Quick Start
 
 ```bash
+# Prerequisites: Node.js 25.2.1, npm
+
 # Client
 cd repos/omnivi-client
-npm install
-npm run dev        # http://localhost:5173
+npm install --include=dev
+npm run build      # or: Vite dev server (requires server running)
 
-# Server
-cd repos/omnivi-server
-npm install
-npm run dev        # ws://localhost:8000
+# Server (already running as systemd service)
+systemctl status omnivi-server.service
+
+# Tests
+npm run test       # unit + E2E (E2E requires server running)
 ```
 
-## Build
+## Building
 
 ```bash
-npm run build      # in each repo
+cd repos/omnivi-client
+npm run build      # → dist/
+
+cd repos/omnivi-server
+npm run build      # TypeScript → dist/
+npm run test:unit  # Vitest game logic tests
+npm run test:contracts  # Hardhat smart contract tests
 ```
 
-## Deployed alpha
+## Running Locally
 
-- Client: http://192.168.68.62:8001
-- Server: ws://192.168.68.62:8000
+The server runs as a systemd service (port 8000). To restart:
 
-Restart after code changes: `sudo systemctl restart omnivi-server omnivi-client`
+```bash
+sudo systemctl restart omnivi-server.service
+```
+
+The client connects to `ws://localhost:8000` by default. To run a dev build:
+
+```bash
+cd repos/omnivi-client
+npm run dev        # Vite dev server on http://localhost:5173
+```
+
+Note: `NODE_ENV=production` in this agent skips devDependencies. Always use `npm install --include=dev` when installing.
 
 ## Optional: real-stakes mode
 
