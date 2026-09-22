@@ -125,7 +125,7 @@ export class Main extends Phaser.Scene {
   bhMass!: number;          // black hole mass (grows during shrink)
   private worldRadius: number = WORLD_SIZE / 2; // shrinking boundary radius (synced from server)
   private escaping!: boolean;       // player is in escape countdown
-  private escapeTimer!: number;     // seconds remaining in escape countdown
+  escapeTimer!: number;             // seconds remaining in escape countdown (public for test harness)
   private disruptFlash!: number;    // seconds remaining for disruption red flash
   spawnProtectTimer!: number; // seconds of invulnerability remaining
 
@@ -904,10 +904,13 @@ export class Main extends Phaser.Scene {
     // ── Bots: AI, physics, dust absorption, PvP ────────────────────────
     this.updateBots(dt);
 
+    // ── Escape sequence: key input in all phases, timer/logic only in shrinking ──
+    this.updateEscapeInput(actions);
+
     // ── The Big Shrink: black hole physics ─────────────────────────────
     if (this.phase === 'shrinking') {
       this.updateBlackHole(dt);
-      this.updateEscape(dt, actions);
+      this.updateEscapeCountdown(dt);
     }
 
     // ── Juice: particles, float labels, sounds ──────────────────────────
@@ -1090,9 +1093,9 @@ export class Main extends Phaser.Scene {
     }
   }
 
-  // ─── Escape Sequence Update ────────────────────────────────────────────────
-  private updateEscape(dt: number, actions: ActionResult) {
-    // E key: start or cancel escape
+  // ─── Escape Sequence: Input Handling (all phases) ──────────────────────────
+  private updateEscapeInput(actions: ActionResult) {
+    // E key: start or cancel escape — can trigger in any phase
     if (actions.escape) {
       if (!this.escaping) {
         const distFromCenter = Math.hypot(
@@ -1115,7 +1118,10 @@ export class Main extends Phaser.Scene {
         this.net?.sendEscapeCancel();
       }
     }
+  }
 
+  // ─── Escape Sequence: Timer Countdown (shrinking phase only) ────────────────
+  private updateEscapeCountdown(dt: number) {
     if (!this.escaping) return;
 
     this.escapeTimer -= dt;
