@@ -33,12 +33,13 @@ test.describe('Omnivi E2E: Multiplayer', () => {
     await bootClient(page1);
     await enterGame(page1, true); // practice mode to isolate the room
 
-    const p1Before = await snapshot(page1);
-    expect(p1Before.player).not.toBeNull();
-    const p1SessionId = p1Before.net?.sessionId;
-    expect(p1SessionId).toMatch(/^\S+$/);
+    // Wait for Player 1's sessionId to be assigned (NetworkManager._attachHandlers sets this)
+    const p1Joined = await waitForSnapshot(page1, "s.net && s.net.sessionId && s.net.sessionId.length > 0", 5000);
+    expect(p1Joined.player).not.toBeNull();
+    expect(p1Joined.net?.sessionId).toBeTruthy();
+    const p1SessionId = p1Joined.net!.sessionId;
 
-    // Wait for Player 1 to be in the game and see the lobby phase
+    // Wait for Player 1 to see the lobby phase
     const p1Lobby = await waitForSnapshot(page1, "s.net && s.net.phase === 'lobby'", 5000);
     expect(p1Lobby.net?.otherPlayers).toBe(0); // Alone in lobby
 
@@ -49,19 +50,20 @@ test.describe('Omnivi E2E: Multiplayer', () => {
     await bootClient(page2);
     await enterGame(page2, true); // same practice mode, same room
 
-    const p2Before = await snapshot(page2);
-    expect(p2Before.player).not.toBeNull();
-    const p2SessionId = p2Before.net?.sessionId;
-    expect(p2SessionId).toMatch(/^\S+$/);
+    // Wait for Player 2's sessionId to be assigned
+    const p2Joined = await waitForSnapshot(page2, "s.net && s.net.sessionId && s.net.sessionId.length > 0", 5000);
+    expect(p2Joined.player).not.toBeNull();
+    expect(p2Joined.net?.sessionId).toBeTruthy();
+    const p2SessionId = p2Joined.net!.sessionId;
     expect(p2SessionId).not.toBe(p1SessionId); // Different player
 
     // Wait for Player 2 to connect and join the room
-    const p2Joined = await waitForSnapshot(
+    const p2Connected = await waitForSnapshot(
       page2,
       "s.net && s.net.connected && s.net.sessionId",
       5000,
     );
-    expect(p2Joined.net?.sessionId).toBe(p2SessionId);
+    expect(p2Connected.net?.sessionId).toBe(p2SessionId);
 
     // Now Player 1 should see Player 2
     // The room broadcasts state patches, so wait for Player 1 to see the new player
