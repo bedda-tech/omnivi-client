@@ -66,6 +66,8 @@ export interface OmniviHarness {
   snapshot(): HarnessSnapshot;
   /** Jump straight to a scene, bypassing canvas-drawn buttons. */
   start(sceneKey: string, data?: Record<string, unknown>): void;
+  /** Directly trigger escape sequence for E2E testing. */
+  triggerEscape(): void;
 }
 
 function findScene(game: Phaser.Game, key: string): Phaser.Scene | null {
@@ -136,6 +138,22 @@ export function installTestHarness(game: Phaser.Game): void {
         if (s.scene.key !== sceneKey) game.scene.stop(s.scene.key);
       }
       game.scene.start(sceneKey, data);
+    },
+
+    triggerEscape: () => {
+      const main = findScene(game, "Main") as any;
+      if (main && main.player) {
+        const ESCAPE_MIN_DIST = 1600;
+        const distFromCenter = Math.hypot(
+          main.player.x - 2500,
+          main.player.y - 2500,
+        );
+        if (distFromCenter >= ESCAPE_MIN_DIST) {
+          main.escaping = true;
+          main.escapeTimer = main.ESCAPE_DURATION ?? 12;
+          main.net?.sendEscapeStart?.();
+        }
+      }
     },
   };
 

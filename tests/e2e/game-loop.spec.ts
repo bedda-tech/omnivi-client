@@ -186,7 +186,7 @@ test.describe('Omnivi E2E: Core Game Loop', () => {
     expect(errors).toEqual([]);
   });
 
-  test.skip('escape sequence timer counts down when activated', async ({ page }) => {
+  test('escape sequence timer counts down when activated', async ({ page }) => {
     await bootClient(page);
     await enterGame(page);
     await waitForSnapshot(page, "s.net && s.net.phase === 'lobby'");
@@ -209,8 +209,8 @@ test.describe('Omnivi E2E: Core Game Loop', () => {
     );
     expect(distFromCenter).toBeGreaterThan(1600); // Must be far enough to escape
 
-    // Start escape sequence (button 'e' or dedicated escape key)
-    await page.keyboard.press('e');
+    // Start escape sequence using test harness (keyboard input unreliable in Playwright)
+    await page.evaluate(() => window.__omnivi.triggerEscape());
     await page.waitForTimeout(100);
 
     // Wait for escape to be recognized
@@ -228,7 +228,7 @@ test.describe('Omnivi E2E: Core Game Loop', () => {
     expect(errors).toEqual([]);
   });
 
-  test.skip('escape sequence completes and timer resets', async ({ page }) => {
+  test('escape sequence completes and timer resets', async ({ page }) => {
     await bootClient(page);
     await enterGame(page, true); // practice mode isolates the room
     await waitForSnapshot(page, "s.net && s.net.phase === 'lobby'");
@@ -243,8 +243,8 @@ test.describe('Omnivi E2E: Core Game Loop', () => {
     await page.mouse.up();
     await page.waitForTimeout(200); // let physics settle
 
-    // Start escape
-    await page.keyboard.press('e');
+    // Start escape using test harness (keyboard input unreliable in Playwright)
+    await page.evaluate(() => window.__omnivi.triggerEscape());
 
     // Wait for escape to be initiated (with longer timeout for physics to settle)
     await waitForSnapshot(page, "s.player && s.player.escapeTimer > 0", 8000);

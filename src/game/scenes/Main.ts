@@ -904,13 +904,13 @@ export class Main extends Phaser.Scene {
     // ── Bots: AI, physics, dust absorption, PvP ────────────────────────
     this.updateBots(dt);
 
-    // ── Escape sequence: key input in all phases, timer/logic only in shrinking ──
+    // ── Escape sequence: key input and timer in all phases ──
     this.updateEscapeInput(actions);
+    this.updateEscapeCountdown(dt);
 
     // ── The Big Shrink: black hole physics ─────────────────────────────
     if (this.phase === 'shrinking') {
       this.updateBlackHole(dt);
-      this.updateEscapeCountdown(dt);
     }
 
     // ── Juice: particles, float labels, sounds ──────────────────────────
@@ -1120,7 +1120,7 @@ export class Main extends Phaser.Scene {
     }
   }
 
-  // ─── Escape Sequence: Timer Countdown (shrinking phase only) ────────────────
+  // ─── Escape Sequence: Timer Countdown ────────────────────────────────────────
   private updateEscapeCountdown(dt: number) {
     if (!this.escaping) return;
 
