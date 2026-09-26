@@ -1,7 +1,8 @@
 import {
   massToRadius, WORLD_SIZE, THRUST_MASS_COST_PCT,
   ABSORB_RATIO, BOT_THRUST, BOT_MAX_SPEED, BOT_DETECT_RANGE,
-  BOOST_IMPULSE, BOOST_MASS_COST_PCT, BOOST_COOLDOWN, GamePhase,
+  BOOST_IMPULSE, BOOST_MASS_COST_PCT, BOOST_COOLDOWN,
+  SHIELD_MASS_COST_PCT, SHIELD_COOLDOWN, CLOAK_MASS_COST_PCT, CLOAK_COOLDOWN, GamePhase,
 } from "../constants";
 import type { Asteroid } from "./Asteroid";
 import type { DustParticle } from "./DustParticle";
@@ -22,6 +23,14 @@ export class BotPlayer {
   boostThisFrame: boolean = false;
   /** Seconds until bot can boost again. */
   boostCooldown: number = 0;
+  /** True when the bot activates shield this frame. */
+  shieldThisFrame: boolean = false;
+  /** Seconds until bot can shield again. */
+  shieldCooldown: number = 0;
+  /** True when the bot activates cloak this frame. */
+  cloakThisFrame: boolean = false;
+  /** Seconds until bot can cloak again. */
+  cloakCooldown: number = 0;
   /** Per-bot phase offset so the organic outline wobble doesn't sync across bots. */
   shapeSeed: number = Math.random() * 1000;
 
@@ -68,7 +77,11 @@ export class BotPlayer {
   ) {
     this.thrustingThisFrame = false;
     this.boostThisFrame = false;
+    this.shieldThisFrame = false;
+    this.cloakThisFrame = false;
     this.boostCooldown = Math.max(0, this.boostCooldown - dt);
+    this.shieldCooldown = Math.max(0, this.shieldCooldown - dt);
+    this.cloakCooldown = Math.max(0, this.cloakCooldown - dt);
 
     const bhRadius = massToRadius(bhMass);
     // Distance at which bot starts fleeing BH (2× BH radius or 600px, whichever is larger)
@@ -97,6 +110,12 @@ export class BotPlayer {
     if (player.mass >= this.mass * ABSORB_RATIO && playerDist < BOT_DETECT_RANGE) {
       this.rotation = Math.atan2(this.y - player.y, this.x - player.x);
       this.thrustingThisFrame = true;
+
+      // Use shield when player is very close (< 30% detect range) and shield ready
+      if (playerDist < BOT_DETECT_RANGE * 0.3 && this.shieldCooldown <= 0 && this.mass > 50) {
+        this.shieldThisFrame = true;
+        this.shieldCooldown = SHIELD_COOLDOWN;
+      }
       // Boost when player is bearing down on us (< 50% detect range)
       if (playerDist < BOT_DETECT_RANGE * 0.5 && this.boostCooldown <= 0 && this.mass > 100) {
         this.boostThisFrame = true;
@@ -135,6 +154,11 @@ export class BotPlayer {
     if (foundTarget) {
       this.rotation = Math.atan2(bestTargetY - this.y, bestTargetX - this.x);
       this.thrustingThisFrame = true;
+      // Use cloak when getting close to prey (within 50% detect range) for stealth hunt
+      if (bestTargetDist < BOT_DETECT_RANGE * 0.5 && this.cloakCooldown <= 0 && this.mass > 100) {
+        this.cloakThisFrame = true;
+        this.cloakCooldown = CLOAK_COOLDOWN;
+      }
       // Boost when prey is within 65% of detect range (closing in for kill)
       if (bestTargetDist < BOT_DETECT_RANGE * 0.65 && this.boostCooldown <= 0 && this.mass > 100) {
         this.boostThisFrame = true;
@@ -199,7 +223,7 @@ export class BotPlayer {
     }
   }
 
-  /** Apply thrust + boost + position update after AI decision. */
+  /** Apply thrust + boost + shield + cloak + position update after AI decision. */
   updatePhysics(dt: number) {
     if (this.thrustingThisFrame && this.mass > 15) {
       const cos = Math.cos(this.rotation);
@@ -215,6 +239,14 @@ export class BotPlayer {
       this.mass = Math.max(15, this.mass - massCost);
       this.vx += cos * BOOST_IMPULSE;
       this.vy += sin * BOOST_IMPULSE;
+    }
+    if (this.shieldThisFrame && this.mass > 50) {
+      const massCost = Math.max(15, this.mass * SHIELD_MASS_COST_PCT);
+      this.mass = Math.max(15, this.mass - massCost);
+    }
+    if (this.cloakThisFrame && this.mass > 100) {
+      const massCost = Math.max(15, this.mass * CLOAK_MASS_COST_PCT);
+      this.mass = Math.max(15, this.mass - massCost);
     }
     const speed = Math.hypot(this.vx, this.vy);
     if (speed > BOT_MAX_SPEED) {

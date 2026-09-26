@@ -2384,6 +2384,20 @@ export class Main extends Phaser.Scene {
         this.gfx.fillCircle(flameX, flameY, r * 0.25);
       }
 
+      // Shield effect (blue ring)
+      if (bot.shieldThisFrame) {
+        this.gfx.lineStyle(Math.max(2, r * 0.1), 0x0099ff, 0.9);
+        this.gfx.strokeCircle(bot.x, bot.y, r * 1.3);
+      }
+
+      // Cloak effect (purple aura)
+      if (bot.cloakThisFrame) {
+        this.gfx.fillStyle(0x9944ff, 0.25);
+        this.gfx.fillCircle(bot.x, bot.y, r * 1.5);
+        this.gfx.lineStyle(Math.max(1, r * 0.05), 0x9944ff, 0.6);
+        this.gfx.strokeCircle(bot.x, bot.y, r * 1.4);
+      }
+
       // Name label (world-space, above bot circle)
       if (!this.botNameLabels.has(bot.name)) {
         const lbl = this.add.text(0, 0, bot.name, {
